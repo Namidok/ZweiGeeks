@@ -1,0 +1,24 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local config and secrets
+.env*
+
+# Audit output - PDF reports about other repos, never commit these
+audit_results/
+reports/
+
+# Logs and OS/editor noise
+*.log
+.DS_Store
+.idea/
+.vscode/
