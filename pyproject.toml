@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-p no:cacheprovider"
+filterwarnings = [
+    # langgraph 0.2.x calls asyncio.iscoroutinefunction on every graph run
+    # (deprecated in Python 3.14); upstream noise, not ours.
+    "ignore::DeprecationWarning:langgraph.*",
+]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [".venv", "audit_results", "reports"]
