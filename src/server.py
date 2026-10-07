@@ -106,6 +106,7 @@ def _run_job(job: Job) -> None:
             "fix_attempts": fix_attempts,
             "diff": diff,
             "has_pdf": job.pdf_path is not None,
+            "summary": final_state.get("summary"),
             "review_branch": final_state.get("review_branch"),
             "review_files": final_state.get("review_files") or [],
         }

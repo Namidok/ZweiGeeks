@@ -36,6 +36,17 @@ class Finding(BaseModel):
         default=None, description="Suggested fix, shown in the PDF report next to the issue."
     )
     source_tool: str = Field(description="Which tool/check produced this, e.g. 'bandit', 'llm'")
+    rule: Optional[str] = Field(
+        default=None, description="The tool's rule id (bandit B602, ruff F401, a CVE id); None for LLM findings."
+    )
+    line_text: Optional[str] = Field(
+        default=None, description="The flagged line, stripped - finds the finding again after edits move it."
+    )
+    fingerprint: Optional[str] = Field(
+        default=None,
+        description="Stable identity across audits: source tool, file, rule (or normalised title) and "
+        "flagged line text. Unlike `id` and `line`, it survives re-audits and edits elsewhere in the file.",
+    )
     fixed: bool = False
     fix_notes: Optional[str] = None
 
@@ -98,6 +109,14 @@ class FixAttempt(BaseModel):
     patch_applied: bool
     notes: str
     timed_out: bool = False
+    reason: Optional[str] = Field(
+        default=None, description="Rejection/skip code (edit_mismatch, not_verified, ...); None when applied."
+    )
+    kind: str = Field(default="llm", description="'llm' or 'deterministic' (ruff --fix, pin bump).")
+    duration_s: float = 0.0
+    # The full fixer conversation (prompt, raw replies). Written to the run
+    # log, kept out of API payloads.
+    transcript: list[dict] = Field(default_factory=list, exclude=True)
 
 
 class GraphState(BaseModel):

@@ -20,7 +20,9 @@ from langgraph.graph import END, StateGraph
 
 from . import config, git_utils
 from .agents import auditor, fixer
+from .ollama_client import call_listener
 from .report import generate_pdf_report
+from .runlog import RunLog, format_summary
 from .schemas import AuditReport, FixAttempt
 
 EventCallback = Optional[Callable[[str, dict], None]]
@@ -45,12 +47,14 @@ def _emit(cb: EventCallback, event: str, payload: dict) -> None:
         cb(event, payload)
 
 
-def build_graph(on_event: EventCallback = None):
+def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None):
     def audit_node(state: AgentState) -> AgentState:
         _emit(on_event, "iteration_start", {"iteration": state["iteration"] + 1})
         report = auditor.run_audit(state["repo_path"], on_event=on_event)
         state["report"] = report
         state["iteration"] += 1
+        if runlog:
+            runlog.audit(state["iteration"], report)
 
         blocking = report.blocking_findings()
         if report.audit_incomplete:
@@ -87,6 +91,8 @@ def build_graph(on_event: EventCallback = None):
         for finding in blocking:
             attempt = fixer.apply_fix(state["repo_path"], finding, on_event=on_event)
             state["fix_attempts"].append(attempt)
+            if runlog:
+                runlog.fix_attempt(state["iteration"], finding, attempt)
             if attempt.patch_applied:
                 finding.fixed = True
                 finding.fix_notes = attempt.notes
@@ -129,7 +135,10 @@ def run_audit_only(repo_path: str, on_event: EventCallback = None) -> dict:
     any files (e.g. read-only scans, or reviewing findings before deciding
     whether to let the full audit<->fix loop run).
     """
-    report = auditor.run_audit(repo_path, on_event=on_event)
+    runlog = RunLog(repo_path, "audit")
+    with call_listener(runlog.on_llm_call):
+        report = auditor.run_audit(repo_path, on_event=on_event)
+    runlog.audit(1, report)
     _emit(
         on_event,
         "audit_only_done",
@@ -143,7 +152,16 @@ def run_audit_only(repo_path: str, on_event: EventCallback = None) -> dict:
     except Exception as exc:  # noqa: BLE001 - a report failure shouldn't hide the audit results
         _emit(on_event, "pdf_report_failed", {"error": str(exc)})
 
-    return {"report": report, "pdf_path": pdf_path}
+    stop_reason = f"{report.incomplete_reason}_incomplete" if report.audit_incomplete else "audit_only"
+    summary = _finish_summary(runlog, report, stop_reason, on_event)
+    return {"report": report, "pdf_path": pdf_path, "summary": summary}
+
+
+def _finish_summary(runlog: RunLog, report: AuditReport, stop_reason: Optional[str], on_event: EventCallback) -> dict:
+    summary = runlog.summary(report, stop_reason)
+    print(format_summary(summary), flush=True)
+    _emit(on_event, "run_summary", summary)
+    return summary
 
 
 def run_pipeline(
@@ -176,9 +194,11 @@ def run_pipeline(
         "consecutive_fix_timeouts": 0,
     }
 
-    graph = build_graph(on_event=on_event)
+    runlog = RunLog(repo_path, "fix")
+    graph = build_graph(on_event=on_event, runlog=runlog)
     try:
-        final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
+        with call_listener(runlog.on_llm_call):
+            final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
         diff = git_utils.diff_against(repo, original_branch)
     finally:
         # Always hand the repo back on the branch the user had checked out, so
@@ -211,6 +231,7 @@ def run_pipeline(
     )
     final_state["diff"] = diff
     final_state["pdf_path"] = pdf_path
+    final_state["summary"] = _finish_summary(runlog, final_state["report"], final_state["stop_reason"], on_event)
     final_state["original_branch"] = original_branch
     final_state["review_branch"] = None
     final_state["review_files"] = []

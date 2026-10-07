@@ -5,6 +5,7 @@ and auto-restart is switched off unless a test opts back in with mocks.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,12 @@ class _NoRealOllama:
 def _isolate_from_ollama(monkeypatch):
     monkeypatch.setattr(ollama_client.ollama, "Client", _NoRealOllama)
     monkeypatch.setattr(config, "OLLAMA_AUTO_RESTART_ON_TIMEOUT", False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_reports(monkeypatch, tmp_path_factory):
+    """Run logs and PDFs go to a temp dir, never the real audit_results/."""
+    monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path_factory.mktemp("reports")))
 
 
 def ollama_reply(content: str, done_reason: str = "stop") -> dict:
@@ -55,3 +62,16 @@ def write(repo: Path, rel: str, content: str = "") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     return path
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def vuln_repo(git_repo):
+    """tests/fixtures/vuln_py committed into a throwaway git repo (the fixture
+    is plain files in ZweiGeeks itself - no nested .git)."""
+    shutil.copytree(FIXTURES / "vuln_py", git_repo, dirs_exist_ok=True)
+    git(git_repo, "add", "-A")
+    git(git_repo, "commit", "-q", "-m", "fixture")
+    return git_repo

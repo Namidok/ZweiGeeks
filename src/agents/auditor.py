@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .. import config
-from ..ollama_client import OllamaTimeout, chat, extract_content
+from ..fingerprint import assign_fingerprints
+from ..ollama_client import OllamaTimeout, chat, extract_content, llm_role
 from ..schemas import AuditReport, Category, Finding, Severity
 from ..tools import api_checks, project, quality, repo_hygiene, security, stack_detect, ui_checks
 
@@ -115,6 +116,7 @@ class _FindingCollector:
         title: Optional[str] = None,
         source_tool: str = "tool",
         resolution: Optional[str] = None,
+        rule: Optional[str] = None,
     ) -> None:
         prefix = _SEVERITY_PREFIX[category]
         self._counters[prefix] = self._counters.get(prefix, 0) + 1
@@ -129,6 +131,7 @@ class _FindingCollector:
                 detail=detail,
                 resolution=resolution,
                 source_tool=source_tool,
+                rule=rule,
             )
         )
 
@@ -177,14 +180,15 @@ def _review_file_with_llm(
     content = content[:max_chars]
     rel = str(file_path.relative_to(repo_root))
 
-    response = chat(
-        model=model,
-        messages=[
-            {"role": "system", "content": FILE_REVIEW_SYSTEM_PROMPT},
-            {"role": "user", "content": f"File: {rel}\n\n{content}"},
-        ],
-        options={"num_ctx": num_ctx},
-    )
+    with llm_role("auditor"):
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": FILE_REVIEW_SYSTEM_PROMPT},
+                {"role": "user", "content": f"File: {rel}\n\n{content}"},
+            ],
+            options={"num_ctx": num_ctx},
+        )
 
     text = extract_content(response)
     if text.startswith("```"):
@@ -294,9 +298,27 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
                 issue.get("issue_text", ""),
                 file=issue.get("filename"), line=issue.get("line_number"),
                 source_tool="bandit", title=issue.get("test_name", "Bandit finding"),
+                rule=issue.get("test_id"),
                 resolution=resolution,
             )
-        _emit(on_event, "tool_done", {"tool": "bandit", "count": len(bandit_issues)})
+        # Files bandit failed to scan must not read as "0 issues": bandit
+        # 1.7.x crashes on every file under Python 3.14 and still exits 0.
+        try:
+            bandit_errors = json.loads(bandit_raw).get("errors") or []
+        except (ValueError, AttributeError):
+            bandit_errors = []
+        if bandit_errors:
+            collector.add(
+                Category.SECURITY, Severity.MEDIUM,
+                f"bandit failed to scan {len(bandit_errors)} file(s), so their security "
+                f"issues are unknown: " + ", ".join(e.get("filename", "?") for e in bandit_errors[:5]),
+                source_tool="bandit", title="bandit couldn't scan some files", rule="scan-error",
+                resolution="Upgrade bandit (1.9+ supports Python 3.14) and re-run the audit.",
+            )
+        _emit(
+            on_event, "tool_done",
+            {"tool": "bandit", "count": len(bandit_issues), "errors": len(bandit_errors)},
+        )
 
         _emit(on_event, "tool_start", {"tool": "pip-audit"})
         pip_audit_deps, pip_audit_raw = security.run_pip_audit(repo_path)
@@ -323,6 +345,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
                     or f"Known vulnerability {vuln.get('id', '')} in "
                     f"{dep.get('name', '')} {dep.get('version', '')}.",
                     source_tool="pip-audit",
+                    rule=f"{dep.get('name', '')}:{vuln.get('id', '')}",
                     title=f"{dep.get('name', 'dependency')} {dep.get('version', '')}: "
                     f"{vuln.get('id', 'vulnerability')}",
                     resolution=resolution,
@@ -338,6 +361,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
                 file=issue.get("filename"),
                 line=(issue.get("location") or {}).get("row"),
                 source_tool="ruff", title=issue.get("code", "Ruff finding"),
+                rule=issue.get("code"),
                 resolution=(
                     f"Run `ruff check --fix` to auto-fix where possible, or address "
                     f"rule {issue.get('code', '')} manually."
@@ -375,7 +399,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
             collector.add(
                 Category.API, Severity.MEDIUM, issue["detail"],
                 file=issue["file"], line=issue.get("line"),
-                source_tool="api-routes", title=issue["issue"],
+                source_tool="api-routes", title=issue["issue"], rule=issue["issue"],
                 resolution=resolution,
             )
         _emit(on_event, "tool_done", {"tool": "api-routes", "count": len(api_issues)})
@@ -396,7 +420,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
         collector.add(
             Category.UI, Severity.LOW, issue["detail"],
             file=issue["file"], line=issue.get("line"),
-            source_tool="ui-templates", title=issue["issue"],
+            source_tool="ui-templates", title=issue["issue"], rule=issue["issue"],
             resolution=_UI_RESOLUTIONS.get(issue["issue"], "Review and address per the finding above."),
         )
     _emit(on_event, "tool_done", {"tool": "ui-templates", "count": len(ui_issues)})
@@ -483,6 +507,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
     improvements = _generate_improvements(collector.findings, sorted(stack))
     _emit(on_event, "improvements_done", {"count": len(improvements)})
 
+    assign_fingerprints(collector.findings, repo_path)
     return AuditReport(
         findings=collector.findings,
         raw_tool_output=raw_outputs,
@@ -508,14 +533,15 @@ def _generate_improvements(findings: list[Finding], stack: list[str]) -> list[st
     }
 
     try:
-        response = chat(
-            model=config.AUDITOR_MODEL,
-            messages=[
-                {"role": "system", "content": IMPROVEMENT_SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(summary, default=str)},
-            ],
-            options={"num_ctx": config.OLLAMA_NUM_CTX},
-        )
+        with llm_role("auditor"):
+            response = chat(
+                model=config.AUDITOR_MODEL,
+                messages=[
+                    {"role": "system", "content": IMPROVEMENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(summary, default=str)},
+                ],
+                options={"num_ctx": config.OLLAMA_NUM_CTX},
+            )
     except Exception:  # noqa: BLE001 - improvements are a nice-to-have, never fatal (OllamaTimeout included)
         return []
 

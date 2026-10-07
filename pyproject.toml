@@ -13,4 +13,5 @@ filterwarnings = [
 
 [tool.ruff]
 target-version = "py311"
-extend-exclude = [".venv", "audit_results", "reports"]
+# tests/fixtures holds deliberately broken code for the agents to fix.
+extend-exclude = [".venv", "audit_results", "reports", "tests/fixtures"]

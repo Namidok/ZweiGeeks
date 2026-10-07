@@ -23,13 +23,14 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
 from .. import config
-from ..ollama_client import OllamaTimeout, chat, extract_content, was_truncated
+from ..ollama_client import OllamaTimeout, chat, extract_content, llm_role, was_truncated
 from ..schemas import Finding, FixAttempt
-from ..tools.project import project_python
+from ..tools.project import project_python, tool_path
 
 EventCallback = Optional[Callable[[str, dict], None]]
 
@@ -235,14 +236,15 @@ def _verify_fix(finding: Finding, original: str, new_content: str) -> tuple[bool
     )
     if len(new_content) <= config.FIXER_MAX_FILE_CHARS:
         user_msg += f"\n\n--- FILE AFTER CHANGE ---\n{new_content}"
-    response = chat(
-        model=config.AUDITOR_MODEL,
-        messages=[
-            {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        options={"num_ctx": config.OLLAMA_NUM_CTX},
-    )
+    with llm_role("verifier"):
+        response = chat(
+            model=config.AUDITOR_MODEL,
+            messages=[
+                {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            options={"num_ctx": config.OLLAMA_NUM_CTX},
+        )
     text = extract_content(response)
     match = re.search(r"\{.*\}", text, re.DOTALL)
     try:
@@ -556,7 +558,7 @@ def _removed_definitions(rel_path: Optional[str], original: str, new_content: st
 
 
 def _ruff_undefined_names(source: str, rel_path: str) -> Optional[list[str]]:
-    ruff = shutil.which("ruff") or str(Path(sys.executable).with_name("ruff"))
+    ruff = tool_path("ruff")
     try:
         proc = subprocess.run(
             [ruff, "check", "--isolated", "--no-cache", "--select", "F821",
@@ -623,17 +625,31 @@ def _reject(on_event: EventCallback, finding: Finding, reason: str, notes: str, 
     _emit(on_event, "fix_rejected", {"finding_id": finding.id, "reason": reason})
     return FixAttempt(
         finding_id=finding.id, file=finding.file, patch_applied=False,
-        timed_out=timed_out, notes=notes,
+        timed_out=timed_out, notes=notes, reason=reason,
     )
 
 
 def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) -> FixAttempt:
+    """Asks the model for a targeted edit, runs it through the gates, and
+    writes it if everything passes. The returned attempt carries the
+    rejection reason, the time taken and the full conversation (for the run
+    log)."""
+    started = time.monotonic()
+    transcript: list[dict] = []
+    attempt = _apply_fix(repo_path, finding, on_event, transcript)
+    attempt.duration_s = round(time.monotonic() - started, 2)
+    attempt.transcript = transcript
+    return attempt
+
+
+def _apply_fix(repo_path: str, finding: Finding, on_event: EventCallback, transcript: list[dict]) -> FixAttempt:
     if not finding.file:
         return FixAttempt(
             finding_id=finding.id,
             file=None,
             patch_applied=False,
             notes="Finding has no associated file; skipped (needs manual review).",
+            reason="no_file",
         )
 
     target = Path(repo_path) / finding.file
@@ -643,6 +659,7 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
             file=finding.file,
             patch_applied=False,
             notes=f"File {finding.file} not found on disk; skipped.",
+            reason="file_missing",
         )
 
     _emit(on_event, "fix_start", {"finding_id": finding.id, "file": finding.file})
@@ -663,6 +680,7 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
                 f"File is over FIXER_MAX_FILE_CHARS ({config.FIXER_MAX_FILE_CHARS}) and the "
                 "finding has no line number to focus on; skipped."
             ),
+            reason="file_too_large",
         )
 
     user_msg = (
@@ -675,7 +693,8 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
         + f"\n\n--- FILE CONTENT ---\n{view}"
     )
 
-    messages = [
+    messages = transcript
+    messages += [
         {"role": "system", "content": FIX_SYSTEM_PROMPT},
         {"role": "user", "content": user_msg},
     ]
@@ -684,12 +703,13 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
     # it failed they usually get it right the second time.
     for attempt in (1, 2):
         try:
-            response = chat(
-                model=config.FIXER_MODEL,
-                messages=messages,
-                options={"num_ctx": config.OLLAMA_NUM_CTX, "num_predict": config.FIXER_NUM_PREDICT},
-                timeout=config.FIXER_TIMEOUT_SECONDS,
-            )
+            with llm_role("fixer"):
+                response = chat(
+                    model=config.FIXER_MODEL,
+                    messages=list(messages),
+                    options={"num_ctx": config.OLLAMA_NUM_CTX, "num_predict": config.FIXER_NUM_PREDICT},
+                    timeout=config.FIXER_TIMEOUT_SECONDS,
+                )
         except OllamaTimeout as exc:
             return _reject(
                 on_event, finding, "timeout",
@@ -715,6 +735,7 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
                 "(usually a repetition loop), so its edits may be incomplete.",
             )
         reply = extract_content(response)
+        messages.append({"role": "assistant", "content": reply})
         edits = _parse_edits(reply)
         if edits:
             new_lf, why = _apply_edits(original_lf, edits)
@@ -728,7 +749,6 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
             return _reject(on_event, finding, reason, f"Rejected after a retry: {why}.")
         _emit(on_event, "fix_retry", {"finding_id": finding.id, "reason": why})
         messages += [
-            {"role": "assistant", "content": reply},
             {"role": "user", "content": (
                 f"That edit couldn't be applied: {why}. Send the edit blocks again. Each "
                 "SEARCH must be consecutive lines copied exactly from the file - including "
@@ -798,6 +818,7 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
             on_event, finding, "verify_failed",
             f"Rejected: verification call failed, so the edit wasn't written. ({exc})",
         )
+    transcript.append({"role": "verifier", "content": f"{'approved' if ok else 'rejected'}: {reason}"})
     if not ok:
         return _reject(on_event, finding, "not_verified", f"Rejected by verifier: {reason}")
 

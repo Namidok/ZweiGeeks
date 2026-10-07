@@ -10,13 +10,15 @@ instead of an indefinite silent hang.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import queue
 import signal
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Callable, Iterator, Optional
 from urllib.parse import urlparse
 
 import ollama
@@ -95,6 +97,36 @@ def _restart_local_ollama() -> bool:
     return killed
 
 
+# Per-run accounting of model calls (count, time, role). Context variables,
+# so concurrent jobs on different threads don't mix their numbers.
+CallListener = Callable[..., None]
+_role: contextvars.ContextVar[str] = contextvars.ContextVar("zweigeeks_llm_role", default="other")
+_listener: contextvars.ContextVar[Optional[CallListener]] = contextvars.ContextVar(
+    "zweigeeks_llm_listener", default=None
+)
+
+
+@contextlib.contextmanager
+def llm_role(name: str) -> Iterator[None]:
+    """Tags the model calls made inside the block (auditor, fixer, verifier)."""
+    token = _role.set(name)
+    try:
+        yield
+    finally:
+        _role.reset(token)
+
+
+@contextlib.contextmanager
+def call_listener(listener: CallListener) -> Iterator[None]:
+    """`listener(role=, model=, seconds=, ok=)` is called after every model
+    call made inside the block, on the calling thread."""
+    token = _listener.set(listener)
+    try:
+        yield
+    finally:
+        _listener.reset(token)
+
+
 def chat(model: str, messages: list[dict], options: Optional[dict] = None, timeout: Optional[float] = None):
     """Same shape as ollama.Client(...).chat(...), but enforces a hard
     wall-clock timeout regardless of what the underlying HTTP client does.
@@ -104,7 +136,19 @@ def chat(model: str, messages: list[dict], options: Optional[dict] = None, timeo
     for it to come back, and retries the call a single time before raising
     OllamaTimeout.
     """
-    timeout = timeout or config.OLLAMA_TIMEOUT_SECONDS
+    started = time.monotonic()
+    ok = False
+    try:
+        response = _chat_with_restart(model, messages, options, timeout or config.OLLAMA_TIMEOUT_SECONDS)
+        ok = True
+        return response
+    finally:
+        listener = _listener.get()
+        if listener:
+            listener(role=_role.get(), model=model, seconds=time.monotonic() - started, ok=ok)
+
+
+def _chat_with_restart(model: str, messages: list[dict], options: Optional[dict], timeout: float):
     try:
         return _chat_once(model, messages, options, timeout)
     except OllamaTimeout:
