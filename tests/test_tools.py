@@ -65,9 +65,13 @@ def test_api_checks_flag_unvalidated_unauthenticated_mutations(tmp_path):
 # --- tool wrappers (subprocess mocked) ----------------------------------------
 
 def test_bandit_wrapper_parses_json_and_survives_missing_binary(monkeypatch):
-    out = json.dumps({"results": [{"test_id": "B307"}]})
-    monkeypatch.setattr(subprocess, "run", mock.Mock(return_value=SimpleNamespace(stdout=out, stderr="")))
-    assert security.run_bandit("/r") == ([{"test_id": "B307"}], out)
+    monkeypatch.setattr(security, "project_files", lambda repo, suffixes=None: ["app.py"])
+    out = json.dumps({"results": [{"test_id": "B307", "filename": "app.py"}]})
+    run = mock.Mock(return_value=SimpleNamespace(stdout=out, stderr=""))
+    monkeypatch.setattr(subprocess, "run", run)
+    assert security.run_bandit("/r") == ([{"test_id": "B307", "filename": "app.py"}], out)
+    # Only the listed project files are scanned - never `-r <repo>`.
+    assert run.call_args.args[0][-1] == "app.py" and "-r" not in run.call_args.args[0]
 
     monkeypatch.setattr(subprocess, "run", mock.Mock(side_effect=FileNotFoundError))
     assert security.run_bandit("/r") == ([], "bandit not installed")
@@ -79,6 +83,7 @@ def test_pip_audit_wrapper_returns_raw_on_bad_json(monkeypatch):
 
 
 def test_ruff_wrapper_handles_timeout(monkeypatch):
+    monkeypatch.setattr(quality, "project_files", lambda repo, suffixes=None: ["app.py"])
     monkeypatch.setattr(subprocess, "run", mock.Mock(side_effect=subprocess.TimeoutExpired("ruff", 120)))
     assert quality.run_ruff("/r") == ([], "ruff timed out")
 

@@ -6,6 +6,9 @@ filterwarnings = [
     # langgraph 0.2.x calls asyncio.iscoroutinefunction on every graph run
     # (deprecated in Python 3.14); upstream noise, not ours.
     "ignore::DeprecationWarning:langgraph.*",
+    # Same deprecation from the pinned FastAPI/Starlette (server tests).
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:fastapi.*",
 ]
 
 [tool.ruff]

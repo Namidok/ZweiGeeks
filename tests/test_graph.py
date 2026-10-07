@@ -30,7 +30,7 @@ def initial_state(max_iterations=5):
 def no_git(monkeypatch):
     """fix_node commits each pass; these tests only care about routing."""
     monkeypatch.setattr(git_utils, "open_repo", mock.Mock())
-    monkeypatch.setattr(git_utils, "commit_all", mock.Mock(return_value=False))
+    monkeypatch.setattr(git_utils, "commit_files", mock.Mock(return_value=False))
 
 
 def run(monkeypatch, reports, attempts=None, max_iterations=5):
@@ -83,13 +83,13 @@ def test_no_blocking_findings_ends_the_loop(monkeypatch, no_git):
 
 def test_iteration_budget_stops_an_unfixable_loop(monkeypatch, no_git):
     final, events, run_audit, apply_fix = run(
-        monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 3, max_iterations=3,
+        monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 4, max_iterations=3,
     )
 
     assert final["stop_reason"] == "max_iterations_reached"
-    assert final["iteration"] == 3
-    assert run_audit.call_count == 3
-    assert apply_fix.call_count == 2  # fix runs between audits, not after the last one
+    assert final["iteration"] == 4
+    assert apply_fix.call_count == 3  # max_iterations counts fix passes...
+    assert run_audit.call_count == 4  # ...and the last one is checked by a final audit
     assert ("loop_end", {"reason": "budget_exhausted", "remaining": 1}) in events
 
 
@@ -126,7 +126,7 @@ def test_fix_node_stops_after_n_consecutive_timeouts(monkeypatch, no_git):
     assert final["stop_reason"] == "fixer_ollama_timeouts"
     assert run_audit.call_count == 1  # no re-audit after a wedged fix pass
     assert ("fix_pass_aborted", {"reason": "ollama_wedged"}) in events
-    git_utils.commit_all.assert_called_once()  # whatever did get fixed is still committed
+    git_utils.commit_files.assert_called_once()  # whatever did get fixed is still committed
 
 
 def test_fix_timeout_count_carries_across_passes(monkeypatch, no_git):
@@ -155,7 +155,7 @@ def test_a_non_timeout_attempt_resets_the_timeout_count(monkeypatch, no_git):
     findings = [blocking(f"SEC-00{i}") for i in range(1, 5)]
     final, _, _, apply_fix = run(
         monkeypatch, [lambda: AuditReport(findings=findings)] * 2,
-        attempts=alternate, max_iterations=2,
+        attempts=alternate, max_iterations=1,
     )
 
     assert apply_fix.call_count == 4
@@ -219,3 +219,49 @@ def test_run_audit_only_never_writes_to_the_repo(git_repo, tmp_path, monkeypatch
     apply_fix.assert_not_called()
     assert len(git_utils.open_repo(str(git_repo)).heads) == 1
     assert result["pdf_path"].endswith("audit_report_repo.pdf")
+
+
+def test_one_pass_means_one_fix_pass_then_a_check(monkeypatch, no_git):
+    def fixed(repo, f, on_event=None):
+        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
+
+    final, events, run_audit, apply_fix = run(
+        monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 2, attempts=fixed, max_iterations=1,
+    )
+
+    assert apply_fix.call_count == 1  # "1 pass" must still let the Fixer work
+    assert run_audit.call_count == 2
+    assert final["stop_reason"] == "max_iterations_reached"
+
+
+def test_run_pipeline_can_hand_the_fixes_to_the_working_copy(git_repo, tmp_path, monkeypatch):
+    _committed_repo(git_repo, "eval(input())\n")
+    original = git_utils.open_repo(str(git_repo)).active_branch.name
+    monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
+    reports = iter([AuditReport(findings=[blocking(file="app.py")]), AuditReport(findings=[])])
+    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None: next(reports))
+
+    def fix(repo, f, on_event=None):
+        (git_repo / f.file).write_text("print(input())\n")
+        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
+
+    monkeypatch.setattr(fixer, "apply_fix", fix)
+    events = []
+
+    final = graph.run_pipeline(str(git_repo), max_iterations=1, apply_fixes=True,
+                               on_event=lambda e, p: events.append((e, p)))
+
+    repo = git_utils.open_repo(str(git_repo))
+    assert final["review_branch"] == f"{final['branch_name']}-review"
+    assert repo.active_branch.name == final["review_branch"]
+    assert (git_repo / "app.py").read_text() == "print(input())\n"  # in the working copy...
+    assert [d.a_path for d in repo.index.diff(None)] == ["app.py"]  # ...uncommitted
+    assert repo.git.show(f"{original}:app.py") == "eval(input())"  # user's branch untouched
+    assert ("fixes_in_working_copy", {"branch": final["review_branch"], "files": ["app.py"]}) in events
+
+
+def test_run_pipeline_refuses_to_start_from_a_leftover_sandbox_branch(git_repo):
+    _committed_repo(git_repo)
+    git(git_repo, "checkout", "-q", "-b", "zweigeeks/1791385133")
+    with pytest.raises(RuntimeError, match="sandbox branch from an earlier run"):
+        graph.run_pipeline(str(git_repo))

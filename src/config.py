@@ -76,3 +76,9 @@ OLLAMA_TEMPERATURE = (
 OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "1024"))
 # Fixer edits can legitimately be longer (several SEARCH/REPLACE blocks).
 FIXER_NUM_PREDICT = int(os.environ.get("FIXER_NUM_PREDICT", "2048"))
+
+# After writing a Python fix, import the edited module with the project's
+# own interpreter (its venv/.venv if there is one). If it imported before
+# the edit and doesn't after, the edit is rolled back and rejected.
+FIXER_IMPORT_CHECK = os.environ.get("FIXER_IMPORT_CHECK", "1") != "0"
+FIXER_IMPORT_TIMEOUT_SECONDS = int(os.environ.get("FIXER_IMPORT_TIMEOUT_SECONDS", "120"))

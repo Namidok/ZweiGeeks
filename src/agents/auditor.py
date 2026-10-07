@@ -31,7 +31,7 @@ from typing import Callable, Optional
 from .. import config
 from ..ollama_client import OllamaTimeout, chat, extract_content
 from ..schemas import AuditReport, Category, Finding, Severity
-from ..tools import api_checks, quality, repo_hygiene, security, stack_detect, ui_checks
+from ..tools import api_checks, project, quality, repo_hygiene, security, stack_detect, ui_checks
 
 EventCallback = Optional[Callable[[str, dict], None]]
 
@@ -138,14 +138,12 @@ def _discover_source_files(
 ) -> list[Path]:
     root = Path(repo_path)
     candidates: list[Path] = []
-    for p in root.rglob("*"):
-        if not p.is_file():
+    # Only the project's own files: nothing git ignores (virtualenvs, caches).
+    for rel in project.project_files(repo_path, SOURCE_EXTENSIONS):
+        p = root / rel
+        if rel in exclude:
             continue
-        if str(p.relative_to(root)) in exclude:
-            continue
-        if any(part in EXCLUDE_DIRS for part in p.parts):
-            continue
-        if p.suffix.lower() not in SOURCE_EXTENSIONS:
+        if any(part in EXCLUDE_DIRS for part in Path(rel).parts):
             continue
         try:
             if p.stat().st_size > max_chars * 3:
@@ -350,7 +348,9 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
         _emit(on_event, "tool_start", {"tool": "pytest"})
         test_summary, test_raw = quality.run_tests_with_coverage(repo_path)
         raw_outputs["pytest"] = test_raw
-        if not test_summary.get("passed"):
+        # None means the suite couldn't be run (e.g. no pytest in the
+        # project's environment) - that's not evidence of failing tests.
+        if test_summary.get("passed") is False:
             collector.add(
                 Category.TESTING, Severity.MEDIUM,
                 "The existing test suite did not pass (or no tests were collected).",
@@ -360,7 +360,10 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
                     "correct environment; add tests if none exist yet."
                 ),
             )
-        _emit(on_event, "tool_done", {"tool": "pytest", "passed": test_summary.get("passed")})
+        _emit(
+            on_event, "tool_done",
+            {"tool": "pytest", "passed": test_summary.get("passed"), "skipped": test_summary.get("skipped")},
+        )
 
         _emit(on_event, "tool_start", {"tool": "api-routes"})
         api_issues = api_checks.scan_routes(repo_path)

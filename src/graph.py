@@ -65,7 +65,9 @@ def build_graph(on_event: EventCallback = None):
             state["done"] = True
             state["stop_reason"] = "no_blocking_findings"
             _emit(on_event, "loop_end", {"reason": "clean"})
-        elif state["iteration"] >= state["max_iterations"]:
+        elif state["iteration"] > state["max_iterations"]:
+            # max_iterations counts fix passes. Each one is followed by an
+            # audit, so the last audit checks the last fixes; only then stop.
             state["done"] = True
             state["stop_reason"] = "max_iterations_reached"
             _emit(on_event, "loop_end", {"reason": "budget_exhausted", "remaining": len(blocking)})
@@ -81,12 +83,15 @@ def build_graph(on_event: EventCallback = None):
 
     def fix_node(state: AgentState) -> AgentState:
         blocking = state["report"].blocking_findings()
+        edited: set[str] = set()
         for finding in blocking:
             attempt = fixer.apply_fix(state["repo_path"], finding, on_event=on_event)
             state["fix_attempts"].append(attempt)
             if attempt.patch_applied:
                 finding.fixed = True
                 finding.fix_notes = attempt.notes
+                if attempt.file:
+                    edited.add(attempt.file)
             if attempt.timed_out:
                 state["consecutive_fix_timeouts"] += 1
                 if state["consecutive_fix_timeouts"] >= config.OLLAMA_MAX_CONSECUTIVE_TIMEOUTS:
@@ -101,8 +106,8 @@ def build_graph(on_event: EventCallback = None):
                 state["consecutive_fix_timeouts"] = 0
 
         repo = git_utils.open_repo(state["repo_path"])
-        changed = git_utils.commit_all(
-            repo, f"zweigeeks: pass {state['iteration']} fixes"
+        changed = git_utils.commit_files(
+            repo, sorted(edited), f"zweigeeks: pass {state['iteration']} fixes"
         )
         _emit(on_event, "commit", {"iteration": state["iteration"], "changed": changed})
         return state
@@ -145,7 +150,15 @@ def run_pipeline(
     repo_path: str,
     max_iterations: int = 5,
     on_event: EventCallback = None,
+    apply_fixes: bool = False,
 ) -> AgentState:
+    """Audit -> fix -> re-audit for up to `max_iterations` fix passes, on a
+    sandbox branch. The repo is switched back to the user's branch at the end.
+
+    With `apply_fixes`, the fixes are then also put into the working copy, on
+    a new `<sandbox>-review` branch off the user's branch, as uncommitted
+    changes - so they show up in the editor's source-control view.
+    """
     repo = git_utils.open_repo(repo_path)
     original_branch = repo.active_branch.name
     branch_name = git_utils.create_sandbox_branch(repo)
@@ -173,7 +186,7 @@ def run_pipeline(
         # fixes. Anything a crash or Ctrl+C left mid-fix-pass is committed to
         # the sandbox branch first, so it's kept for review and doesn't leave
         # a dirty tree that blocks the next run.
-        if git_utils.commit_all(repo, "zweigeeks: partial fixes (run interrupted)"):
+        if git_utils.commit_tracked_changes(repo, "zweigeeks: partial fixes (run interrupted)"):
             _emit(on_event, "commit", {"iteration": "interrupted", "changed": True})
         git_utils.return_to_original_branch(repo, original_branch)
         _emit(on_event, "branch_restored", {"branch": original_branch, "fixes_on": branch_name})
@@ -198,4 +211,14 @@ def run_pipeline(
     )
     final_state["diff"] = diff
     final_state["pdf_path"] = pdf_path
+    final_state["original_branch"] = original_branch
+    final_state["review_branch"] = None
+    final_state["review_files"] = []
+    if apply_fixes and diff.strip():
+        try:
+            review, files = git_utils.open_for_review(repo, original_branch, branch_name)
+            final_state["review_branch"], final_state["review_files"] = review, files
+            _emit(on_event, "fixes_in_working_copy", {"branch": review, "files": files})
+        except Exception as exc:  # noqa: BLE001 - the fixes are still on the sandbox branch
+            _emit(on_event, "fixes_in_working_copy_failed", {"error": str(exc)})
     return final_state

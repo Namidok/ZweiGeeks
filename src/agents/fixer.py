@@ -15,17 +15,21 @@ placeholder checks, then an LLM verifier) before it touches disk.
 
 from __future__ import annotations
 
+import ast
 import difflib
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
 from .. import config
 from ..ollama_client import OllamaTimeout, chat, extract_content, was_truncated
 from ..schemas import Finding, FixAttempt
+from ..tools.project import project_python
 
 EventCallback = Optional[Callable[[str, dict], None]]
 
@@ -517,6 +521,104 @@ def _dropped_placeholder_check(original: str, new_content: str) -> Optional[str]
     return None
 
 
+def _python_syntax_regression(rel_path: Optional[str], original: str, new_content: str) -> Optional[str]:
+    """A Python file that parsed before must still parse after the edit."""
+    if not rel_path or not rel_path.endswith(".py"):
+        return None
+    try:
+        ast.parse(original)
+    except SyntaxError:
+        return None  # already broken; not this edit's doing
+    try:
+        ast.parse(new_content)
+    except SyntaxError as exc:
+        return f"line {exc.lineno}: {exc.msg}"
+    return None
+
+
+def _defined_names(source: str) -> set[str]:
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    return names
+
+
+def _removed_definitions(rel_path: Optional[str], original: str, new_content: str) -> list[str]:
+    """Functions/classes the edit deleted. A targeted fix never needs to
+    remove one; when a model does, it's usually lost code past the edit."""
+    if not rel_path or not rel_path.endswith(".py"):
+        return []
+    try:
+        return sorted(_defined_names(original) - _defined_names(new_content))
+    except SyntaxError:
+        return []
+
+
+def _ruff_undefined_names(source: str, rel_path: str) -> Optional[list[str]]:
+    ruff = shutil.which("ruff") or str(Path(sys.executable).with_name("ruff"))
+    try:
+        proc = subprocess.run(
+            [ruff, "check", "--isolated", "--no-cache", "--select", "F821",
+             "--output-format", "json", "--stdin-filename", rel_path, "-"],
+            input=source, capture_output=True, text=True, timeout=30,
+        )
+        items = json.loads(proc.stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    names = []
+    for item in items:
+        m = re.search(r"`([^`]+)`", item.get("message", ""))
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def _new_undefined_names(rel_path: Optional[str], original: str, new_content: str) -> list[str]:
+    """Names the edit uses that exist nowhere (e.g. `sql.escape(...)` with no
+    `sql` imported). These parse and import fine and only crash when the
+    line runs, so the syntax and import checks can't see them."""
+    if not rel_path or not rel_path.endswith(".py"):
+        return []
+    before = _ruff_undefined_names(original, rel_path)
+    after = _ruff_undefined_names(new_content, rel_path)
+    if before is None or after is None:
+        return []
+    return sorted(set(after) - set(before))
+
+
+def _module_name(rel_path: str) -> Optional[str]:
+    parts = list(Path(rel_path).with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    if not parts or not all(part.isidentifier() for part in parts):
+        return None
+    return ".".join(parts)
+
+
+def _import_check(repo_path: str, rel_path: Optional[str]) -> Optional[tuple[bool, str]]:
+    """Imports the module with the project's own interpreter (or ours, if
+    the repo has no virtualenv). Returns (ok, last error line), or None when
+    the check can't run for this file."""
+    if not config.FIXER_IMPORT_CHECK or not rel_path or not rel_path.endswith(".py"):
+        return None
+    name = _module_name(rel_path)
+    if not name:
+        return None
+    python = project_python(repo_path) or sys.executable
+    try:
+        proc = subprocess.run(
+            [python, "-c", f"import importlib; importlib.import_module({name!r})"],
+            cwd=repo_path, capture_output=True, text=True,
+            timeout=config.FIXER_IMPORT_TIMEOUT_SECONDS,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [line for line in proc.stderr.strip().splitlines() if line.strip()]
+    return proc.returncode == 0, (lines[-1] if lines else "")
+
+
 def _reject(on_event: EventCallback, finding: Finding, reason: str, notes: str, timed_out: bool = False) -> FixAttempt:
     _emit(on_event, "fix_rejected", {"finding_id": finding.id, "reason": reason})
     return FixAttempt(
@@ -642,6 +744,28 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
     if syntax_error:
         return _reject(on_event, finding, "php_syntax_error", f"Rejected: edit breaks PHP syntax - {syntax_error}")
 
+    py_syntax_error = _python_syntax_regression(finding.file, original_lf, new_lf)
+    if py_syntax_error:
+        return _reject(
+            on_event, finding, "python_syntax_error",
+            f"Rejected: edit breaks Python syntax - {py_syntax_error}",
+        )
+
+    removed = _removed_definitions(finding.file, original_lf, new_lf)
+    if removed:
+        return _reject(
+            on_event, finding, "removed_definition",
+            f"Rejected: edit deletes existing code ({', '.join(removed)}) instead of fixing it.",
+        )
+
+    undefined_names = _new_undefined_names(finding.file, original_lf, new_lf)
+    if undefined_names:
+        return _reject(
+            on_event, finding, "undefined_name",
+            f"Rejected: edit uses name(s) that aren't defined or imported anywhere in the file: "
+            f"{', '.join(undefined_names)} - this would crash when the line runs.",
+        )
+
     exposure = _exposure_still_present(finding, original, new_content)
     if exposure:
         return _reject(
@@ -677,8 +801,23 @@ def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) 
     if not ok:
         return _reject(on_event, finding, "not_verified", f"Rejected by verifier: {reason}")
 
+    # Does the module import today? Checked before writing, so a module that
+    # was already broken (or needs config we don't have) doesn't block fixes.
+    before = _import_check(repo_path, finding.file)
+    original_bytes = target.read_bytes()
+
     # newline="" so write_text doesn't translate the line endings we just restored.
     target.write_text(new_content, newline="")
+
+    if before and before[0]:
+        after = _import_check(repo_path, finding.file)
+        if after and not after[0]:
+            target.write_bytes(original_bytes)
+            return _reject(
+                on_event, finding, "breaks_import",
+                f"Rejected and rolled back: the module stopped importing after the edit ({after[1]}).",
+            )
+
     _emit(on_event, "fix_applied", {"finding_id": finding.id, "file": finding.file})
     return FixAttempt(
         finding_id=finding.id,

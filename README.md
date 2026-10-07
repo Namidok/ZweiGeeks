@@ -38,7 +38,13 @@ Runs in order of how much each source can be trusted:
 2. **Static tools**, only when `src/tools/stack_detect.py` finds a Python
    stack: `bandit`, `pip-audit` (reads `requirements.txt`), `ruff`, the
    repo's own `pytest` suite, and a heuristic scan for mutating API routes
-   without validation/auth. Tool output is mapped straight into findings,
+   without validation/auth. Every tool and the LLM review only see the
+   project's own files, as listed by git (tracked, plus untracked files
+   that aren't ignored), so a `venv/` or other ignored folder inside the
+   repo is never scanned. Tests run with the repo's own virtualenv
+   (`venv/`, `.venv/` or `env/`) when it has one; if that environment has
+   no pytest, the suite is reported as skipped rather than failing.
+   Tool output is mapped straight into findings,
    with no LLM in between to paraphrase or drop results. A static scan of
    HTML/PHP templates (missing `alt`, missing viewport meta, heavy inline
    styles) runs for every stack.
@@ -69,11 +75,20 @@ One blocking finding at a time:
   secret-exposure findings the leaking output really removed, no deleted
   code that fills a variable still in use, no deleted placeholder-credential
   check, and no calls to PHP functions that exist nowhere in the repo.
+  For Python files: the edit must still parse, must not delete an existing
+  function or class, and must not use names that are defined nowhere in the
+  file (ruff's F821 - e.g. `sql.escape(...)` with no `sql` imported).
 - Then a second LLM call acts as **verifier**: given the diff, does it
   resolve the issue and preserve existing behaviour? Only then is the file
   written.
+- After writing a Python fix, the edited module is imported with the
+  project's own interpreter. If it imported before the edit and doesn't
+  after (say the edit raises at import time when an environment variable
+  is missing), the file is rolled back and the fix rejected. Set
+  `FIXER_IMPORT_CHECK=0` to skip this.
 
-Each fix pass is committed to the sandbox branch, and the next audit pass
+Each fix pass commits only the files the Fixer edited to the sandbox
+branch, never stray files from the working tree, and the next audit pass
 re-verifies the result.
 
 ### Human in the loop
@@ -163,6 +178,37 @@ state = run_pipeline("/path/to/repo", max_iterations=3)
 print(state["stop_reason"], state["branch_name"], state["pdf_path"])
 ```
 
+**In the browser:** run `python run.py` and open <http://127.0.0.1:8008>.
+(Auto-reload is off, because restarting the server kills a run in progress;
+set `ZWEIGEEKS_RELOAD=1` when working on ZweiGeeks itself.)
+Enter a repo path, pick **Audit and fix** or **Audit only**, and start the
+run. The two agents act it out in a small pixel-art office: the Auditor
+works at its desk and carries blocking findings to the hand-off table, the
+Fixer picks them up and works through them at its bench, commits at the git
+rack, and the PDF comes out of the printer. Next to the office, an activity
+log shows every step as text. When the run ends, a report opens with the
+findings by severity, every fix attempt and why it was or wasn't applied,
+the diff on the sandbox branch, and a PDF download. Reloading the page picks
+the current run back up.
+
+**Fix passes** is how many times the Fixer gets a turn; every fix pass is
+followed by an audit, and the last audit checks the last fixes. So 1 means
+audit, fix, re-audit.
+
+When a run that changed files ends, the fixes are put into your working copy
+(the "Put the fixes in my working copy" option, on by default): ZweiGeeks
+checks out a new `zweigeeks/<id>-review` branch off your branch with the
+fixes applied as **uncommitted** changes, so VS Code's Source Control view
+lists every changed file with a side-by-side diff. Commit them there to keep
+them, or discard them and switch back to your branch. With the option off,
+the **Show fixes in my editor** button does the same later. A run refuses to
+start while the repo is still on a `zweigeeks/<id>` sandbox branch left by
+a run that didn't finish.
+
+The UI is plain HTML, CSS and JavaScript in `static/`, with no build step
+and nothing loaded from the network. The office (`static/office.js`) is
+drawn with canvas calls; there are no sprite files.
+
 **As a local service** (FastAPI on `127.0.0.1:8008`):
 
 ```bash
@@ -170,14 +216,16 @@ python run.py
 
 curl -s -X POST http://127.0.0.1:8008/api/jobs \
   -H 'Content-Type: application/json' \
-  -d '{"repo_path": "/path/to/repo", "max_iterations": 3}'
-# -> {"job_id": "..."}
+  -d '{"repo_path": "/path/to/repo", "max_iterations": 3, "mode": "fix"}'
+# -> {"job_id": "..."}   mode: "fix" (default) or "audit" (read-only)
 
-curl -s http://127.0.0.1:8008/api/jobs/<job_id>   # status + result
+curl -s http://127.0.0.1:8008/api/jobs/<job_id>          # status + result
+curl -s -O http://127.0.0.1:8008/api/jobs/<job_id>/report # the PDF
 ```
 
 Progress events (tool runs, per-file reviews, fix attempts, commits) stream
-as JSON over the websocket at `ws://127.0.0.1:8008/ws/<job_id>`.
+as JSON over the websocket at `ws://127.0.0.1:8008/ws/<job_id>`. A client
+that connects late gets every earlier event replayed first.
 
 The PDF report lands in `REPORTS_DIR` (relative to where ZweiGeeks runs, so
 it stays out of the audited repo), grouped into high/medium/low with a
@@ -193,18 +241,23 @@ The suite needs no Ollama server: every model call is mocked, and a fixture
 makes any unmocked call fail loudly. It covers the repo-hygiene checks
 against throwaway git repos, LLM-output parsing, the timeout/restart logic,
 both circuit breakers, every stop reason in the graph, the Fixer's edit
-application and rejection gates, and PDF generation. CI runs `ruff` and the
+application and rejection gates, PDF generation, and the job API the UI
+uses (both modes, the report download, websocket replay). CI runs `ruff` and the
 suite with coverage on every push and pull request.
 
 ## Known limitations
 
-- **No web front-end yet.** `static/` contains empty placeholder files; use
-  the HTTP/websocket API or the Python entry points above.
+- **No way to cancel a run from the UI.** Stopping the server mid-run kills
+  the job thread before it can switch the repo back, so you may need to
+  `git checkout` your own branch afterwards.
+- **The UI has no automated tests.** The API it calls is covered by
+  `tests/test_server.py`; the page itself was checked by hand in Chrome.
 - **Language coverage is uneven.** Python repos get the full static tool
   set. PHP repos get repo-hygiene checks, the LLM review and PHP-specific
   Fixer gates. Other languages get the LLM review and template heuristics
-  only. There is no Python syntax gate in the Fixer; Python edits rely on
-  the verifier and the next audit pass.
+  only. The Python import check only proves a module still imports; when
+  the repo's environment has pytest, the next audit pass also re-runs its
+  tests.
 - **Heuristic checks are heuristics.** API checks grep route decorators, and
   UI checks are a few regexes, not a live fuzz test or a Lighthouse run.
 - **A 7B local model is a weak reviewer.** Findings can be wrong or vary
@@ -228,8 +281,13 @@ src/
   ollama_client.py    timeout-safe model calls, wedge detection, restart
   tools/              repo hygiene, stack detection, bandit/pip-audit, ruff/pytest, API/UI heuristics
   report.py           PDF report
-  server.py           FastAPI + websocket job API
+  server.py           FastAPI + websocket job API, serves the web UI
   schemas.py          Finding, AuditReport, FixAttempt
   config.py           environment-driven settings
+static/
+  index.html          the web UI
+  app.js              job form, activity log, report dialog
+  office.js           pixel-art office scene (canvas, no assets)
+  style.css
 tests/                pytest suite (no LLM required)
 ```

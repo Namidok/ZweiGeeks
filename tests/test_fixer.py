@@ -281,3 +281,82 @@ def test_invented_php_helpers_are_flagged(tmp_path, monkeypatch):
     original = "<?php\necho render_page($name);\n"
     edited = "<?php\nvalidate_api_key();\necho htmlspecialchars(render_page($name));\n"
     assert fixer._undefined_functions(str(tmp_path), "index.php", original, edited) == ["validate_api_key"]
+
+
+# --- Python gates (regressions from a real run: the verifier approved all three) ---
+
+def test_edit_that_breaks_python_syntax_is_rejected_and_not_written(repo, monkeypatch):
+    broken = EDIT.replace("ast.literal_eval(data)", "ast.literal_eval(data")
+    monkeypatch.setattr(fixer, "chat", scripted_chat([broken]))
+
+    attempt = fixer.apply_fix(str(repo), eval_finding())
+
+    assert attempt.patch_applied is False
+    assert "breaks Python syntax" in attempt.notes
+    assert (repo / "handler.py").read_text() == HANDLER
+
+
+def test_edit_that_deletes_a_function_is_rejected(tmp_path, monkeypatch):
+    write(tmp_path, "handler.py", HANDLER + "\n\ndef embed(text):\n    return [text]\n")
+    drop_embed = (
+        "<<<<<<< SEARCH\n"
+        "    result = eval(data)\n"
+        "    return result\n"
+        "\n"
+        "\n"
+        "def embed(text):\n"
+        "    return [text]\n"
+        "=======\n"
+        "    result = ast.literal_eval(data)\n"
+        "    return result\n"
+        ">>>>>>> REPLACE"
+    )
+    monkeypatch.setattr(fixer, "chat", scripted_chat([drop_embed]))
+
+    attempt = fixer.apply_fix(str(tmp_path), eval_finding())
+
+    assert attempt.patch_applied is False
+    assert "deletes existing code (embed)" in attempt.notes
+
+
+def test_edit_that_stops_the_module_importing_is_rolled_back(repo, monkeypatch):
+    raises_on_import = (
+        "<<<<<<< SEARCH\n"
+        "import ast\n"
+        "=======\n"
+        "import ast\n"
+        "raise ValueError('Invalid CHROMA_DIR environment variable')\n"
+        ">>>>>>> REPLACE"
+    )
+    monkeypatch.setattr(fixer, "chat", scripted_chat([raises_on_import]))
+
+    attempt = fixer.apply_fix(str(repo), eval_finding())
+
+    assert attempt.patch_applied is False
+    assert "stopped importing" in attempt.notes
+    assert "Invalid CHROMA_DIR" in attempt.notes
+    assert (repo / "handler.py").read_text() == HANDLER  # rolled back
+
+
+def test_module_that_already_failed_to_import_does_not_block_fixes(tmp_path, monkeypatch):
+    write(tmp_path, "handler.py", "import not_installed_anywhere\n" + HANDLER)
+    monkeypatch.setattr(fixer, "chat", scripted_chat([EDIT]))
+
+    assert fixer.apply_fix(str(tmp_path), eval_finding(line=6)).patch_applied is True
+
+
+def test_import_check_can_be_switched_off(repo, monkeypatch):
+    monkeypatch.setattr(config, "FIXER_IMPORT_CHECK", False)
+    assert fixer._import_check(str(repo), "handler.py") is None
+
+
+def test_edit_that_uses_an_undefined_name_is_rejected(repo, monkeypatch):
+    # From a real run: the model "escaped" text with a module it never imported.
+    uses_sql = EDIT.replace("ast.literal_eval(data)", "ast.literal_eval(sql.escape(data))")
+    monkeypatch.setattr(fixer, "chat", scripted_chat([uses_sql]))
+
+    attempt = fixer.apply_fix(str(repo), eval_finding())
+
+    assert attempt.patch_applied is False
+    assert "aren't defined or imported" in attempt.notes and "sql" in attempt.notes
+    assert (repo / "handler.py").read_text() == HANDLER

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZweiGeeks</title>
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1a2e'/%3E%3Crect x='5' y='9' width='10' height='14' fill='%237c6cf0'/%3E%3Crect x='17' y='9' width='10' height='14' fill='%2325b591'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="col col-left">
+      <header class="panel brand">
+        <h1>ZweiGeeks</h1>
+        <p>Two local agents audit a git repository and fix what they can on a sandbox branch.</p>
+        <dl class="runtime" id="runtime" aria-label="Model configuration">
+          <div><dt>Auditor</dt><dd id="cfg-auditor">…</dd></div>
+          <div><dt>Fixer</dt><dd id="cfg-fixer">…</dd></div>
+          <div><dt>Ollama</dt><dd id="cfg-host">…</dd></div>
+        </dl>
+      </header>
+
+      <form class="panel run-form" id="run-form" novalidate>
+        <h2>New run</h2>
+        <div class="field">
+          <label for="repo-path">Repository path</label>
+          <input id="repo-path" name="repo_path" type="text" required spellcheck="false"
+                 autocomplete="off" placeholder="/path/to/a/local/git/repo">
+        </div>
+
+        <fieldset class="field">
+          <legend>What to do</legend>
+          <div class="segmented">
+            <input type="radio" id="mode-fix" name="mode" value="fix" checked>
+            <label for="mode-fix">Audit and fix</label>
+            <input type="radio" id="mode-audit" name="mode" value="audit">
+            <label for="mode-audit">Audit only</label>
+          </div>
+        </fieldset>
+
+        <div class="field field-inline" id="passes-field">
+          <label for="max-iterations">Fix passes</label>
+          <input id="max-iterations" name="max_iterations" type="number" min="1" max="20" value="5">
+        </div>
+
+        <label class="check" id="apply-field">
+          <input type="checkbox" id="apply-fixes" name="apply_fixes" checked>
+          <span>Put the fixes in my working copy when the run ends, so my editor shows them</span>
+        </label>
+
+        <p class="form-hint" id="mode-hint"></p>
+        <p class="form-error" id="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn-primary" id="start-btn">Start run</button>
+      </form>
+
+      <section class="panel outcome" id="outcome" hidden aria-labelledby="outcome-title">
+        <h2 id="outcome-title"></h2>
+        <p id="outcome-detail"></p>
+        <div class="outcome-actions">
+          <button type="button" class="btn-primary" id="open-report">Open report</button>
+          <button type="button" class="btn-fixer" id="review-btn" hidden>Show fixes in my editor</button>
+          <a class="btn-secondary" id="pdf-link" href="#" download hidden>Download PDF</a>
+        </div>
+        <div class="review-result" id="review-result" role="status" hidden></div>
+        <div class="review-cmd" id="review-cmd" hidden>
+          <code id="review-cmd-text"></code>
+          <button type="button" class="btn-quiet" id="copy-cmd">Copy</button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="col office-col">
+      <div class="office-frame">
+        <canvas id="office" role="img"
+                aria-label="Pixel-art office where the Auditor and the Fixer act out the run. The activity log has the same information as text."></canvas>
+      </div>
+    </main>
+
+    <aside class="col col-right">
+      <section class="panel agents" aria-label="Agents">
+        <article class="agent agent-auditor" id="card-auditor">
+          <canvas class="portrait" data-who="auditor" aria-hidden="true"></canvas>
+          <div class="agent-text">
+            <h2>Auditor</h2>
+            <p class="agent-status" id="status-auditor" aria-live="polite">Idle</p>
+            <p class="agent-stat" id="stat-auditor"></p>
+          </div>
+        </article>
+        <article class="agent agent-fixer" id="card-fixer">
+          <canvas class="portrait" data-who="fixer" aria-hidden="true"></canvas>
+          <div class="agent-text">
+            <h2>Fixer</h2>
+            <p class="agent-status" id="status-fixer" aria-live="polite">Idle</p>
+            <p class="agent-stat" id="stat-fixer"></p>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel log-panel" aria-labelledby="log-title">
+        <h2 id="log-title">Activity</h2>
+        <ol class="log" id="log">
+          <li class="log-empty">Start a run and every step from both agents shows up here.</li>
+        </ol>
+      </section>
+    </aside>
+  </div>
+
+  <dialog class="report" id="report" aria-labelledby="report-title">
+    <header class="report-head">
+      <div class="verdict" id="verdict">
+        <h2 id="report-title"></h2>
+        <p id="verdict-detail"></p>
+      </div>
+      <button type="button" class="btn-quiet close" id="close-report">Close</button>
+    </header>
+
+    <div class="tabs" role="tablist" aria-label="Run results">
+      <button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="true">Findings <span class="count" id="count-findings"></span></button>
+      <button role="tab" id="tab-fixes" aria-controls="panel-fixes" aria-selected="false" tabindex="-1">Fix attempts <span class="count" id="count-fixes"></span></button>
+      <button role="tab" id="tab-diff" aria-controls="panel-diff" aria-selected="false" tabindex="-1">Changes <span class="count" id="count-diff"></span></button>
+      <button role="tab" id="tab-ideas" aria-controls="panel-ideas" aria-selected="false" tabindex="-1">Suggestions <span class="count" id="count-ideas"></span></button>
+    </div>
+
+    <div class="report-body">
+      <div role="tabpanel" id="panel-findings" aria-labelledby="tab-findings">
+        <div class="filters" id="filters" role="group" aria-label="Filter findings by severity">
+          <button type="button" class="chip" data-bucket="all" aria-pressed="true">All</button>
+          <button type="button" class="chip" data-bucket="high" aria-pressed="false">High</button>
+          <button type="button" class="chip" data-bucket="medium" aria-pressed="false">Medium</button>
+          <button type="button" class="chip" data-bucket="low" aria-pressed="false">Low</button>
+        </div>
+        <div id="findings-list"></div>
+      </div>
+      <div role="tabpanel" id="panel-fixes" aria-labelledby="tab-fixes" hidden>
+        <ul class="attempts" id="attempts-list"></ul>
+      </div>
+      <div role="tabpanel" id="panel-diff" aria-labelledby="tab-diff" hidden>
+        <div id="diff-view"></div>
+      </div>
+      <div role="tabpanel" id="panel-ideas" aria-labelledby="tab-ideas" hidden>
+        <ul class="ideas" id="ideas-list"></ul>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/office.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
