@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from .project import project_files, project_python, relative_to_repo
+from .project import project_files, project_python, relative_to_repo, tool_path
 
 
 def run_ruff(repo_path: str) -> tuple[list[dict], str]:
@@ -17,7 +17,7 @@ def run_ruff(repo_path: str) -> tuple[list[dict], str]:
         return [], "no Python files in the project"
     try:
         proc = subprocess.run(
-            ["ruff", "check", "--output-format", "json", *files],
+            [tool_path("ruff"), "check", "--output-format", "json", *files],
             cwd=repo_path,
             capture_output=True,
             text=True,

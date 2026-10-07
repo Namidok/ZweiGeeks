@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from .project import project_files, relative_to_repo
+from .project import project_files, relative_to_repo, tool_path
 
 
 def run_bandit(repo_path: str) -> tuple[list[dict], str]:
@@ -19,7 +19,7 @@ def run_bandit(repo_path: str) -> tuple[list[dict], str]:
         return [], "no Python files in the project"
     try:
         proc = subprocess.run(
-            ["bandit", "-f", "json", "-q", *files],
+            [tool_path("bandit"), "-f", "json", "-q", *files],
             cwd=repo_path,
             capture_output=True,
             text=True,
@@ -44,7 +44,7 @@ def run_bandit(repo_path: str) -> tuple[list[dict], str]:
 def run_pip_audit(repo_path: str) -> tuple[list[dict], str]:
     try:
         proc = subprocess.run(
-            ["pip-audit", "-r", f"{repo_path}/requirements.txt", "-f", "json"],
+            [tool_path("pip-audit"), "-r", f"{repo_path}/requirements.txt", "-f", "json"],
             capture_output=True,
             text=True,
             timeout=180,

@@ -5,7 +5,7 @@ pydantic==2.13.5
 langgraph==0.2.34
 ollama==0.3.3
 GitPython==3.1.43
-bandit==1.7.10
+bandit==1.9.4
 pip-audit==2.7.3
 ruff==0.6.9
 pytest==8.3.3

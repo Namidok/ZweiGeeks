@@ -9,7 +9,9 @@ dependencies, build output and caches out without a hand-kept exclude list.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -70,3 +72,12 @@ def relative_to_repo(path: Optional[str], repo_path: str) -> Optional[str]:
         return str(p.resolve().relative_to(Path(repo_path).resolve()))
     except ValueError:
         return path
+
+
+def tool_path(name: str) -> str:
+    """A CLI tool (bandit, ruff, pip-audit) from ZweiGeeks' own environment
+    first, so it works without an activated venv; then from PATH."""
+    candidate = Path(sys.executable).with_name(name)
+    if candidate.is_file():
+        return str(candidate)
+    return shutil.which(name) or name
