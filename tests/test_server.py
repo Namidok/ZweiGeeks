@@ -196,3 +196,25 @@ def test_pipeline_crash_surfaces_as_job_error(client, monkeypatch, repo):
 
 def test_unknown_job_report_is_404(client):
     assert client.get("/api/jobs/nope/report").status_code == 404
+
+
+def test_pick_folder_returns_the_choice_and_whether_it_is_a_repo(client, monkeypatch, repo, tmp_path):
+    from src import folder_picker
+
+    monkeypatch.setattr(folder_picker, "pick_folder", lambda: str(repo))
+    assert client.post("/api/pick-folder").json() == {"path": str(repo), "is_git_repo": True}
+    monkeypatch.setattr(folder_picker, "pick_folder", lambda: str(tmp_path))
+    assert client.post("/api/pick-folder").json()["is_git_repo"] is False
+
+
+def test_pick_folder_cancel_and_unavailable(client, monkeypatch):
+    from src import folder_picker
+
+    monkeypatch.setattr(folder_picker, "pick_folder", lambda: None)
+    assert client.post("/api/pick-folder").json() == {"cancelled": True}
+
+    def nope():
+        raise folder_picker.PickerUnavailable("no dialog")
+
+    monkeypatch.setattr(folder_picker, "pick_folder", nope)
+    assert client.post("/api/pick-folder").json() == {"error": "no dialog"}

@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, folder_picker
 from .graph import run_audit_only, run_pipeline
 
 app = FastAPI(title="ZweiGeeks")
@@ -213,3 +213,16 @@ async def ws_job(websocket: WebSocket, job_id: str) -> None:
         pass
     finally:
         job.subscribers.remove(queue)
+
+
+@app.post("/api/pick-folder")
+def pick_folder() -> dict:
+    """Opens the native folder dialog on this machine and returns the choice."""
+    try:
+        path = folder_picker.pick_folder()
+    except folder_picker.PickerUnavailable as exc:
+        return {"error": str(exc)}
+    if not path:
+        return {"cancelled": True}
+    is_repo = (Path(path).expanduser() / ".git").exists()
+    return {"path": path, "is_git_repo": is_repo}

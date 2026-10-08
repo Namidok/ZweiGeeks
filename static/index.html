@@ -24,9 +24,12 @@
       <form class="panel run-form" id="run-form" novalidate>
         <h2>New run</h2>
         <div class="field">
-          <label for="repo-path">Repository path</label>
-          <input id="repo-path" name="repo_path" type="text" required spellcheck="false"
-                 autocomplete="off" placeholder="/path/to/a/local/git/repo">
+          <label for="repo-path">Repository</label>
+          <div class="picker">
+            <button type="button" class="btn-secondary" id="pick-btn">Choose folder…</button>
+            <input id="repo-path" name="repo_path" type="text" required spellcheck="false"
+                   autocomplete="off" placeholder="No folder chosen">
+          </div>
         </div>
 
         <fieldset class="field">

@@ -5,9 +5,11 @@
 Two agents, one loop. The **Auditor** finds what's broken in a repository
 (security, code quality, API and UI hygiene, failing tests); the **Fixer**
 proposes targeted edits for the blocking findings; the Auditor re-checks the
-result. The loop runs on a throwaway git branch until nothing blocking is
-left, the iteration budget runs out, or the local LLM stops responding, and
-a human reviews the branch before anything is merged.
+result. The loop runs in a private copy of your repo until nothing the
+Fixer can act on is left, it stops making progress, the iteration budget
+runs out, or the local LLM stops responding. The fixes then land in your
+working tree as ordinary **uncommitted changes**, so you review them in your
+editor's Source Control view before committing anything.
 
 Everything runs locally against an [Ollama](https://ollama.com) server: no
 API keys, and no code leaves the machine.
@@ -16,10 +18,10 @@ API keys, and no code leaves the machine.
 
 ```mermaid
 flowchart LR
-    A[Audit] -->|blocking findings,<br/>budget left| F[Fix]
-    F -->|commit pass to<br/>sandbox branch| A
-    A -->|none blocking / budget spent /<br/>review incomplete| E[End: PDF report +<br/>branch for human review]
-    F -->|fixer keeps timing out| E
+    A[Audit] -->|fixable findings or<br/>mechanical fixes, budget left| F[Fix]
+    F -->|pass applied fixes| A
+    A -->|nothing fixable left / budget spent /<br/>review incomplete| E[End: PDF report +<br/>fixes in your working tree]
+    F -->|pass fixed nothing /<br/>fixer keeps timing out| E
 ```
 
 The loop is a [LangGraph](https://github.com/langchain-ai/langgraph) state
@@ -55,20 +57,50 @@ Runs in order of how much each source can be trusted:
 4. **Improvements**: one summarising call for broader suggestions in the
    report.
 
-A finding is **blocking** if it is open, `critical`/`high`, and not from the
-repo-hygiene check. Leaked credentials and missing shared files need a human
-(rotate the key, restore the file), so they are reported but never sent to
-the Fixer.
+Every finding gets a **fingerprint**: a hash of the tool, the file, the rule
+(or, for LLM findings, the normalised title) and the text of the flagged
+line - not its line number or its per-run id, which change between audits.
+The loop uses it to recognise "the same issue again".
+
+A finding **can keep the loop going** only if the Fixer can act on it: it has
+a file, it isn't from the repo-hygiene check (a leaked key needs rotating, a
+missing file restoring), it isn't a suite-level pytest failure, it isn't a
+pip-audit advisory (the deterministic fixer handles those), and the Fixer
+hasn't given up on it. Everything else is reported but never blocks. Fixable
+findings are worked most severe first (security before quality at equal
+severity) down to `FIXER_MIN_SEVERITY`, at most `FIXER_MAX_FIXES_PER_PASS` per
+pass.
+
+The per-file LLM review is cached by (file path, content hash, model, review
+prompt), so a re-audit only re-reviews files the Fixer edited, and unchanged
+files can't produce "new" findings. The summarising "improvements" call runs
+once per run.
+
+### Deterministic fixes (`src/agents/deterministic.py`)
+
+Run first in every fix pass, with no model involved:
+
+- **ruff**: `ruff check --fix` on the files that have ruff findings, applying
+  only the fixes ruff itself marks safe, with the project's own ruff config.
+- **Vulnerable dependency pins**: `package==old` in `requirements.txt` is
+  rewritten to the lowest version that fixes every pip-audit advisory for
+  that package. Nothing is installed; the next audit re-checks the pin.
+
+They're counted separately in the run summary.
 
 ### Fixer (`src/agents/fixer.py`)
 
-One blocking finding at a time:
+One finding at a time, most severe first:
 
 - The model sees the file with line numbers (or a window around the
   finding's line if the file exceeds `FIXER_MAX_FILE_CHARS`) and must answer
   with `SEARCH/REPLACE` edit blocks, not a rewritten file, so every line
-  outside a block is preserved byte-for-byte. Edits that don't apply get one
-  retry with the reason fed back.
+  outside a block is preserved byte-for-byte. A SEARCH is matched exactly,
+  then ignoring surrounding whitespace, then ignoring runs of whitespace
+  inside lines; if it still matches several places, the one nearest the
+  finding's line is edited. Edits that don't apply get one retry with the
+  reason fed back. After an applied edit, the other findings in that file are
+  re-located by their flagged line text.
 - Before anything touches disk, the edit must pass deterministic gates:
   reply not cut off at the token cap, file actually changed, no new PHP
   syntax errors (`php -l`, or tree-sitter if PHP isn't installed), for
@@ -87,20 +119,43 @@ One blocking finding at a time:
   is missing), the file is rolled back and the fix rejected. Set
   `FIXER_IMPORT_CHECK=0` to skip this.
 
-Each fix pass commits only the files the Fixer edited to the sandbox
-branch, never stray files from the working tree, and the next audit pass
-re-verifies the result.
+### Convergence
+
+The loop remembers what it tried, per fingerprint:
+
+- A rejected fix is **retried right away** with the rejection reason added to
+  the prompt ("Your previous edit was rejected because ...") and a different
+  seed (`OLLAMA_SEED` + attempt number, Fixer calls only; audits keep the
+  fixed seed so they stay repeatable) - never as an identical request.
+- After `FIXER_MAX_ATTEMPTS_PER_FINDING` attempts (default 3) the finding is
+  marked **needs manual fix**. Timeouts and rejections that come from the
+  file itself (missing, too large to window) aren't retried.
+- A fix pass that applies **nothing** ends the run with `stop_reason`
+  `no_progress`; it doesn't audit an unchanged repo again. If only exhausted
+  findings are left, the run ends with `needs_manual_fix`.
 
 ### Human in the loop
 
-ZweiGeeks creates `zweigeeks/<unix-timestamp>` off your current branch,
-refuses to start on a dirty working tree, never pushes, never merges, and
-switches the repo back to your original branch when the run ends (also on
-errors or Ctrl+C). The fixes stay on the sandbox branch for you to review:
+A run never touches your branch, index or working tree while it works. It
+runs `git worktree add --detach <tmpdir> HEAD` and audits and fixes in that
+private checkout, so you can keep working. No branch is created, and nothing
+is staged, committed, stashed or pushed in your repo.
 
-```bash
-git diff main..zweigeeks/1737558000
-```
+When the run ends, the diff is applied to your working tree with `git apply`,
+as plain unstaged edits - VS Code shows the files under **Changes**. It's
+done per file: a file you've changed yourself (staged or not), or whose patch
+no longer applies cleanly, is **skipped** rather than overwritten; it's listed
+in the run summary and the UI, and its patch is saved to
+`audit_results/<run>/skipped.patch`. The whole diff is always saved to
+`fixes.patch` first. The worktree is removed in a `finally` (Ctrl+C and
+errors included - the fixes made so far still land), and worktrees left by
+crashed runs are pruned on the next start.
+
+Review with `git diff`; keep what you like by committing it, drop the rest
+with `git checkout -- <file>`.
+
+The audit sees your last *commit* (HEAD), not uncommitted edits, and not
+untracked or gitignored files (a `.env`, say, isn't in the private copy).
 
 ### Reliability: a local LLM that hangs
 
@@ -143,9 +198,16 @@ Defaults:
 | Variable | Default | Purpose |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server |
-| `AUDITOR_MODEL` | `qwen2.5-coder:7b` | File review, improvements, fix verifier |
+| `AUDITOR_MODEL` | `qwen2.5-coder:7b` | File review and improvements |
 | `FIXER_MODEL` | `qwen2.5-coder:7b` | Edit generation |
-| `MAX_ITERATIONS` | `5` | Default audit passes per job (API) |
+| `VERIFIER_MODEL` | same as `AUDITOR_MODEL` | Approves or rejects each proposed fix |
+| `MAX_ITERATIONS` | `5` | Default fix passes per job |
+| `FIXER_MIN_SEVERITY` | `medium` | Lowest severity sent to the LLM Fixer (`critical`, `high`, `medium`, `low`, `info`) |
+| `FIXER_MAX_FIXES_PER_PASS` | `8` | Findings the LLM Fixer attempts per pass, most severe first |
+| `FIXER_MAX_ATTEMPTS_PER_FINDING` | `3` | Attempts before a finding is marked needs manual fix |
+| `FIXER_IMPORT_CHECK` | `1` | Import the edited Python module after a fix; `0` to skip |
+| `REVIEW_CACHE` | `1` | Cache per-file LLM reviews by content; `0` to always ask the model |
+| `REVIEW_CACHE_DIR` | `<REPORTS_DIR>/.review_cache` | Where cached reviews live |
 | `OLLAMA_NUM_CTX` | `8192` | Context window requested from Ollama |
 | `AUDIT_MAX_FILES` | `30` | Files the LLM reviews per audit pass |
 | `AUDIT_MAX_FILE_CHARS` | `12000` | Characters of each file shown to the reviewer |
@@ -158,25 +220,41 @@ Defaults:
 | `OLLAMA_TEMPERATURE` | unset | Optional override (avoid `0`, which loops) |
 | `OLLAMA_NUM_PREDICT` | `1024` | Max tokens per call |
 | `FIXER_NUM_PREDICT` | `2048` | Max tokens per Fixer call |
-| `REPORTS_DIR` | `audit_results` | Where PDF reports are written |
+| `REPORTS_DIR` | `audit_results` | PDF reports and per-run folders (`run.jsonl`, patches) |
 
 ## Run it
 
-The target must be a local git repo with a branch checked out and no
-uncommitted changes to tracked files.
+The target must be a local git repo with at least one commit. Uncommitted
+changes of your own are fine: files you've changed are never overwritten.
 
 **From Python:**
 
 ```python
 from src.graph import run_audit_only, run_pipeline
 
-# Read-only: findings + PDF report, no branch, no edits.
+# Read-only: findings + PDF report, no edits.
 run_audit_only("/path/to/repo")
 
-# Full audit -> fix -> re-audit loop on a sandbox branch.
+# Audit -> fix -> re-audit; the fixes land in the working tree, unstaged.
 state = run_pipeline("/path/to/repo", max_iterations=3)
-print(state["stop_reason"], state["branch_name"], state["pdf_path"])
+print(state["stop_reason"], state["applied_files"], state["skipped_files"])
 ```
+
+Or from the command line, which prints the run summary:
+
+```bash
+python -m src.cli /path/to/repo --passes 3     # audit + fix
+python -m src.cli /path/to/repo --audit-only
+```
+
+**The run log.** Every run writes `audit_results/<run_id>/run.jsonl`: each
+audit's findings by source, and for every fix attempt the finding's
+fingerprint, source tool, file, pass, the full prompt, the model's raw reply,
+the rejection reason and notes, the seed and how long it took. At the end a
+summary table is printed (and sent to the UI as a `run_summary` event):
+findings by source, fixes applied (LLM and deterministic), rejections by
+reason, model calls and seconds by role, files changed in your working tree
+and files skipped. When fixes don't land, read the rejections table first.
 
 **In the browser:** run `python run.py` and open <http://127.0.0.1:8008>.
 (Auto-reload is off, because restarting the server kills a run in progress;
@@ -184,26 +262,17 @@ set `ZWEIGEEKS_RELOAD=1` when working on ZweiGeeks itself.)
 Enter a repo path, pick **Audit and fix** or **Audit only**, and start the
 run. The two agents act it out in a small pixel-art office: the Auditor
 works at its desk and carries blocking findings to the hand-off table, the
-Fixer picks them up and works through them at its bench, commits at the git
-rack, and the PDF comes out of the printer. Next to the office, an activity
+Fixer picks them up and works through them at its bench, the rack blinks
+after each fix pass, and the PDF comes out of the printer. Next to the office, an activity
 log shows every step as text. When the run ends, a report opens with the
 findings by severity, every fix attempt and why it was or wasn't applied,
-the diff on the sandbox branch, and a PDF download. Reloading the page picks
-the current run back up.
+the diff of what changed, and a PDF download. The outcome card says how many
+files changed in your working tree and lists any skipped. Reloading the page
+picks the current run back up.
 
 **Fix passes** is how many times the Fixer gets a turn; every fix pass is
 followed by an audit, and the last audit checks the last fixes. So 1 means
 audit, fix, re-audit.
-
-When a run that changed files ends, the fixes are put into your working copy
-(the "Put the fixes in my working copy" option, on by default): ZweiGeeks
-checks out a new `zweigeeks/<id>-review` branch off your branch with the
-fixes applied as **uncommitted** changes, so VS Code's Source Control view
-lists every changed file with a side-by-side diff. Commit them there to keep
-them, or discard them and switch back to your branch. With the option off,
-the **Show fixes in my editor** button does the same later. A run refuses to
-start while the repo is still on a `zweigeeks/<id>` sandbox branch left by
-a run that didn't finish.
 
 The UI is plain HTML, CSS and JavaScript in `static/`, with no build step
 and nothing loaded from the network. The office (`static/office.js`) is
@@ -223,13 +292,59 @@ curl -s http://127.0.0.1:8008/api/jobs/<job_id>          # status + result
 curl -s -O http://127.0.0.1:8008/api/jobs/<job_id>/report # the PDF
 ```
 
-Progress events (tool runs, per-file reviews, fix attempts, commits) stream
+Progress events (tool runs, per-file reviews, fix attempts, fix passes) stream
 as JSON over the websocket at `ws://127.0.0.1:8008/ws/<job_id>`. A client
 that connects late gets every earlier event replayed first.
 
 The PDF report lands in `REPORTS_DIR` (relative to where ZweiGeeks runs, so
 it stays out of the audited repo), grouped into high/medium/low with a
 suggested resolution per finding.
+
+## Measured results
+
+One benchmark so far, on the planted-issue fixture in `tests/fixtures/vuln_py`
+(2 Python files, 2 pinned dependencies): `qwen2.5-coder:7b` for every role,
+5 fix passes allowed, an M-series Mac with 16 GB, one run each. Treat it as an
+illustration of the loop, not a statistically meaningful evaluation.
+
+| | Before (sandbox-branch loop) | After (this loop) |
+|---|---|---|
+| Stop reason | `max_iterations_reached` | `no_progress` |
+| Audits / fix passes | 6 / 5 | 2 / 2 |
+| Fix attempts | 115 | 31 |
+| Fixes applied | 4 (LLM) | 5 (LLM) + 10 (deterministic) |
+| pip-audit findings, first -> last audit | 21 -> 21 | 21 -> 0 |
+| ruff findings, first -> last audit | 4 -> 4 | 4 -> 1 |
+| Rejections | `no_file` 105, `undefined_name` 5, `not_verified` 1 | `undefined_name` 5, `no_change` 5, `edit_mismatch` 3, `not_verified` 2, `python_syntax_error` 1 |
+| Needs manual fix | n/a | 2 |
+| Model calls (auditor / fixer / verifier) | 18 / 10 / 5 = 33 | 5 / 25 / 7 = 37 |
+| Model time | 237 s | 281 s |
+| Wall time | 264 s | 295 s |
+
+What the numbers say: the 105 `no_file` attempts (file-less pip-audit
+advisories retried every pass) are gone, the 21 advisories are fixed by two
+pin bumps with no model call, and the loop stops when a pass can't fix
+anything instead of auditing an unchanged repo. What they don't say: the
+model is no better at fixing code. Only 5 of its 25 fixer calls produced an
+accepted edit, and 22 of the 26 LLM attempts that were rejected were
+`undefined_name` (a fix using `os` without importing it), `no_change` or
+`edit_mismatch`. Total time went up slightly because the Fixer now makes
+real retries instead of skipping work. The next lever is the model.
+
+### Trying a larger coder model
+
+Roles are configured separately, so a stronger model can be tried where it
+matters without changing the default:
+
+```bash
+ollama pull qwen2.5-coder:14b          # needs roughly 10 GB free; check `ollama ps`
+FIXER_MODEL=qwen2.5-coder:14b python -m src.cli /path/to/repo --passes 3
+# a different verifier makes the approval independent of the author:
+FIXER_MODEL=qwen2.5-coder:14b VERIFIER_MODEL=qwen3:8b python -m src.cli ...
+```
+
+Compare the printed summaries (applied fixes, rejections by reason, time).
+No larger model has been measured here yet, so there are no numbers for one.
 
 ## Tests
 
@@ -248,8 +363,11 @@ suite with coverage on every push and pull request.
 ## Known limitations
 
 - **No way to cancel a run from the UI.** Stopping the server mid-run kills
-  the job thread before it can switch the repo back, so you may need to
-  `git checkout` your own branch afterwards.
+  the job before it can clean up; the leftover private worktree is pruned the
+  next time a run starts in that repo (or with `git worktree prune`).
+- **The audit sees HEAD.** Uncommitted edits, untracked files and gitignored
+  files (virtualenvs, `.env`) aren't in the private copy. The project's own
+  virtualenv is still used to run its tests and to import-check edits.
 - **The UI has no automated tests.** The API it calls is covered by
   `tests/test_server.py`; the page itself was checked by hand in Chrome.
 - **Language coverage is uneven.** Python repos get the full static tool
@@ -263,7 +381,7 @@ suite with coverage on every push and pull request.
 - **A 7B local model is a weak reviewer.** Findings can be wrong or vary
   between models, line numbers are approximate, and the verifier can be
   fooled. That's why the deterministic gates exist and why a human reviews
-  the branch.
+  the changes in Source Control before committing them.
 - **No benchmark results yet.** There is no measured precision/recall or
   fix-rate evaluation in this repo.
 - **The service is a local tool.** Jobs live in memory and there is no
@@ -275,9 +393,14 @@ suite with coverage on every push and pull request.
 
 ```
 src/
-  graph.py            LangGraph audit -> fix loop, sandbox branch handling
-  agents/auditor.py   deterministic checks + static tools + per-file LLM review
+  graph.py            LangGraph audit -> fix loop, private worktree, landing the fixes
+  git_utils.py        worktree, per-file git apply into the working tree
+  agents/auditor.py   deterministic checks + static tools + per-file LLM review (cached)
+  agents/deterministic.py  ruff safe fixes and dependency pin bumps, no model
   agents/fixer.py     edit-block fixes, deterministic gates, LLM verifier
+  fingerprint.py      stable finding identities
+  runlog.py           run.jsonl log and the summary table
+  cli.py              python -m src.cli
   ollama_client.py    timeout-safe model calls, wedge detection, restart
   tools/              repo hygiene, stack detection, bandit/pip-audit, ruff/pytest, API/UI heuristics
   report.py           PDF report

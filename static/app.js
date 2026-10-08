@@ -443,7 +443,7 @@
   function setRunning(running) {
     ui.startBtn.disabled = running;
     ui.startBtn.textContent = running ? "Running…" : "Start run";
-    for (const input of ui.form.querySelectorAll("input")) input.disabled = running;
+    for (const input of ui.form.querySelectorAll("input, #pick-btn")) input.disabled = running;
     if (!running) syncMode();
   }
 
@@ -568,6 +568,31 @@
     connect(jobId);
     setTimeout(() => { if (office) office.setInstant(false); }, 1000);
   }
+
+  // ---------- folder picker ----------
+
+  // The server shows the OS's own folder dialog (a browser can't reveal a
+  // folder's real path), so this only works because ZweiGeeks is local.
+  $("pick-btn").addEventListener("click", async () => {
+    const btn = $("pick-btn");
+    showFormError("");
+    btn.disabled = true;
+    btn.textContent = "Waiting for the dialog…";
+    try {
+      const data = await (await fetch("/api/pick-folder", { method: "POST" })).json();
+      if (data.error) {
+        showFormError(data.error);
+      } else if (data.path) {
+        ui.repoPath.value = data.path;
+        if (!data.is_git_repo) showFormError("That folder isn't a git repository (no .git inside). Pick the project's top-level folder.");
+      }
+    } catch {
+      showFormError("Can't reach the ZweiGeeks server.");
+    } finally {
+      btn.disabled = ui.startBtn.textContent === "Running…";
+      btn.textContent = "Choose folder…";
+    }
+  });
 
   // ---------- mode toggle ----------
 
