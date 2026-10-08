@@ -9,6 +9,7 @@ dependencies, build output and caches out without a hand-kept exclude list.
 
 from __future__ import annotations
 
+import functools
 import shutil
 import subprocess
 import sys
@@ -71,13 +72,31 @@ def _is_dependency(root: Path, rel: Path, venv_dirs: dict[Path, bool]) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=64)
+def origin_repo(path: str) -> str:
+    """The main working tree for a path that may be a linked worktree. A run
+    audits a private worktree of the user's repo, but the user's virtualenv
+    (gitignored, so absent from the worktree) lives in the original."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"], cwd=path, capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return path
+    if not out:
+        return path
+    common = (Path(path) / out).resolve()
+    return str(common.parent) if common.name == ".git" else path
+
+
 def project_python(repo_path: str) -> Optional[str]:
-    """The interpreter of a virtualenv inside the repo, if there is one."""
-    root = Path(repo_path)
-    for name in _VENV_DIRS:
-        for candidate in (root / name / "bin" / "python", root / name / "Scripts" / "python.exe"):
-            if candidate.is_file():
-                return str(candidate)
+    """The interpreter of a virtualenv in the repo (or, for a worktree, in
+    the repo it was made from), if there is one."""
+    for root in dict.fromkeys([Path(repo_path), Path(origin_repo(repo_path))]):
+        for name in _VENV_DIRS:
+            for candidate in (root / name / "bin" / "python", root / name / "Scripts" / "python.exe"):
+                if candidate.is_file():
+                    return str(candidate)
     return None
 
 

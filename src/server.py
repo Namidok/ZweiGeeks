@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, git_utils
+from . import config
 from .graph import run_audit_only, run_pipeline
 
 app = FastAPI(title="ZweiGeeks")
@@ -30,12 +30,10 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 class JobRequest(BaseModel):
     repo_path: str
     max_iterations: int = Field(default=config.MAX_ITERATIONS, ge=1, le=20)
-    # "fix" runs the audit -> fix -> re-audit loop on a sandbox branch;
-    # "audit" only reports and never touches the repo.
+    # "fix" runs the audit -> fix -> re-audit loop in a private worktree and
+    # applies the fixes to the working tree as unstaged edits; "audit" only
+    # reports and never touches the repo.
     mode: Literal["fix", "audit"] = "fix"
-    # Put the fixes into the working copy (uncommitted, on a review branch)
-    # when the run ends, so they show up in the editor.
-    apply_fixes: bool = True
 
 
 class Job:
@@ -47,7 +45,6 @@ class Job:
         self.repo_path = repo_path
         self.max_iterations = max_iterations
         self.mode = mode
-        self.apply_fixes = True
         self.loop = loop
         self.pdf_path: Optional[str] = None
         self.events: list[dict] = []
@@ -81,15 +78,14 @@ def _run_job(job: Job) -> None:
             stop_reason = (
                 f"{report.incomplete_reason}_incomplete" if report.audit_incomplete else "audit_only"
             )
-            branch, base_branch, fix_attempts, diff = None, None, [], ""
+            fix_attempts, diff, applied_files, skipped_files, skipped_patch = [], "", [], [], None
         else:
-            final_state = run_pipeline(
-                job.repo_path, job.max_iterations, on_event=job.emit, apply_fixes=job.apply_fixes,
-            )
+            final_state = run_pipeline(job.repo_path, job.max_iterations, on_event=job.emit)
             report = final_state["report"]
             stop_reason = final_state["stop_reason"]
-            branch = final_state["branch_name"]
-            base_branch = final_state.get("original_branch")
+            applied_files = final_state.get("applied_files", [])
+            skipped_files = final_state.get("skipped_files", [])
+            skipped_patch = final_state.get("skipped_patch")
             fix_attempts = [a.model_dump() for a in final_state["fix_attempts"]]
             diff = final_state.get("diff", "")
         job.pdf_path = final_state.get("pdf_path")
@@ -98,8 +94,9 @@ def _run_job(job: Job) -> None:
             "mode": job.mode,
             "repo_path": job.repo_path,
             "stop_reason": stop_reason,
-            "branch": branch,
-            "base_branch": base_branch,
+            "applied_files": applied_files,
+            "skipped_files": skipped_files,
+            "skipped_patch": skipped_patch,
             "findings": [f.model_dump() for f in report.findings],
             "improvements": report.improvements,
             "audit_incomplete": report.audit_incomplete,
@@ -107,8 +104,6 @@ def _run_job(job: Job) -> None:
             "diff": diff,
             "has_pdf": job.pdf_path is not None,
             "summary": final_state.get("summary"),
-            "review_branch": final_state.get("review_branch"),
-            "review_files": final_state.get("review_files") or [],
         }
         job.emit("job_complete", job.result)
     except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
@@ -162,28 +157,13 @@ async def create_job(req: JobRequest) -> dict:
         (j for j in JOBS.values() if j.repo_path == repo_path and j.status == "running"), None
     )
     if running:
-        # Two jobs branching and committing in the same repo would trample
+        # Two jobs applying fixes to the same working tree would trample
         # each other.
         return {"error": f"A job is already running on this repo (job {running.id})."}
-
-    if req.mode == "fix":
-        try:
-            leftover = git_utils.sandbox_branch_checked_out(git_utils.open_repo(repo_path))
-        except Exception:  # noqa: BLE001 - run_pipeline reports git problems itself
-            leftover = None
-        if leftover:
-            return {
-                "error": (
-                    f"The repo is still on {leftover}, a sandbox branch from an earlier run "
-                    f"that didn't finish. Switch back to your own branch first "
-                    f"(e.g. `git checkout main`), then start the run again."
-                )
-            }
 
     job_id = uuid.uuid4().hex[:12]
     loop = asyncio.get_running_loop()
     job = Job(job_id, repo_path, req.max_iterations, req.mode, loop)
-    job.apply_fixes = req.apply_fixes
     JOBS[job_id] = job
 
     thread = threading.Thread(target=_run_job, args=(job,), daemon=True)
@@ -233,31 +213,3 @@ async def ws_job(websocket: WebSocket, job_id: str) -> None:
         pass
     finally:
         job.subscribers.remove(queue)
-
-
-@app.post("/api/jobs/{job_id}/review")
-def open_review(job_id: str) -> dict:
-    """Put a finished run's fixes into the repo as uncommitted changes on a
-    new review branch, for reviewing in an editor (VS Code's Source Control
-    view, `git diff`). The sandbox branch and the user's branch stay as they are.
-    """
-    job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Unknown job.")
-    if job.status != "done" or not job.result or not job.result.get("branch"):
-        return {"error": "Only a finished audit-and-fix run has fixes to review."}
-    if not job.result.get("diff", "").strip():
-        return {"error": "This run didn't change any files."}
-    running = next(
-        (j for j in JOBS.values() if j.repo_path == job.repo_path and j.status == "running"), None
-    )
-    if running:
-        return {"error": f"A job is still running on this repo (job {running.id})."}
-    try:
-        repo = git_utils.open_repo(job.repo_path)
-        review, files = git_utils.open_for_review(
-            repo, job.result.get("base_branch") or repo.active_branch.name, job.result["branch"]
-        )
-    except Exception as exc:  # noqa: BLE001 - git errors go back to the UI as text
-        return {"error": str(exc)}
-    return {"review_branch": review, "base_branch": job.result.get("base_branch"), "files": files}

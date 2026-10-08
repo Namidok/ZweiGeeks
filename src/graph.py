@@ -2,14 +2,14 @@
 
 Graph shape:
 
-    audit --(blocking findings remain, budget left)--> fix --> audit
-    audit --(clean, incomplete, or budget exhausted)--> END
-    fix --(fixer kept timing out)--> END
+    audit --(fixable findings or deterministic fixes pending, budget left)--> fix --> audit
+    audit --(clean, incomplete, nothing left the Fixer can do, or budget exhausted)--> END
+    fix --(a pass applied nothing, or the Fixer kept timing out)--> END
 
-Everything happens on a throwaway git branch created before the graph runs.
-We never push and never touch the branch the user had checked out - and the
-repo is switched back to that branch when the run ends (or fails), with the
-fixes left on the sandbox branch for review.
+The graph runs against a private detached git worktree of the user's HEAD,
+never the user's own working tree (see git_utils). When it ends, run_pipeline
+applies what changed to the user's working tree as unstaged edits, file by
+file, and always removes the worktree.
 """
 
 from __future__ import annotations
@@ -32,8 +32,7 @@ EventCallback = Optional[Callable[[str, dict], None]]
 
 
 class AgentState(TypedDict):
-    repo_path: str
-    branch_name: str
+    repo_path: str  # the private worktree, not the user's repo
     iteration: int
     max_iterations: int
     report: AuditReport
@@ -244,11 +243,7 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
                 if attempt.reason in _NOT_RETRYABLE or attempt.reason == "ollama_unreachable":
                     break
 
-        repo = git_utils.open_repo(state["repo_path"])
-        changed = git_utils.commit_files(
-            repo, sorted(edited), f"zweigeeks: pass {state['iteration']} fixes"
-        )
-        _emit(on_event, "commit", {"iteration": state["iteration"], "changed": changed})
+        _emit(on_event, "fix_pass_done", {"iteration": state["iteration"], "changed": applied})
         if applied == 0 and not state["done"]:
             # Nothing changed, so another audit would find the same things and
             # the next pass would face the same files: stop instead.
@@ -267,7 +262,7 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
 
 
 def run_audit_only(repo_path: str, on_event: EventCallback = None) -> dict:
-    """Runs just the Auditor - no sandbox branch, no Fixer, no writes to the
+    """Runs just the Auditor - no worktree, no Fixer, no writes to the
     target repo at all - and generates the PDF report from the result.
 
     Useful when you want a findings report without letting the Fixer touch
@@ -307,23 +302,24 @@ def run_pipeline(
     repo_path: str,
     max_iterations: int = 5,
     on_event: EventCallback = None,
-    apply_fixes: bool = False,
 ) -> AgentState:
-    """Audit -> fix -> re-audit for up to `max_iterations` fix passes, on a
-    sandbox branch. The repo is switched back to the user's branch at the end.
+    """Audit -> fix -> re-audit for up to `max_iterations` fix passes.
 
-    With `apply_fixes`, the fixes are then also put into the working copy, on
-    a new `<sandbox>-review` branch off the user's branch, as uncommitted
-    changes - so they show up in the editor's source-control view.
+    All work happens in a detached git worktree of HEAD in a temp directory;
+    the user's working tree, index and branch are never touched during the
+    run (no branch is created either). At the end the changes are applied to
+    the user's working tree as unstaged edits, skipping any file the user has
+    changed themselves, and the worktree is removed - also on errors and
+    Ctrl+C.
     """
     repo = git_utils.open_repo(repo_path)
-    original_branch = repo.active_branch.name
-    branch_name = git_utils.create_sandbox_branch(repo)
-    _emit(on_event, "branch_created", {"branch": branch_name, "from": original_branch})
+    git_utils.prune_stale_worktrees(repo)
+    worktree = git_utils.create_worktree(repo)
+    _emit(on_event, "worktree_created", {})
 
+    runlog = RunLog(repo_path, "fix")
     initial_state: AgentState = {
-        "repo_path": repo_path,
-        "branch_name": branch_name,
+        "repo_path": worktree,
         "iteration": 0,
         "max_iterations": max_iterations,
         "report": AuditReport(),
@@ -335,22 +331,28 @@ def run_pipeline(
         "improvements": [],
     }
 
-    runlog = RunLog(repo_path, "fix")
     graph = build_graph(on_event=on_event, runlog=runlog)
+    diff = ""
+    landed: dict = {"applied": [], "skipped": [], "skipped_patch": None, "fixes_patch": None}
     try:
         with call_listener(runlog.on_llm_call):
             final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
-        diff = git_utils.diff_against(repo, original_branch)
     finally:
-        # Always hand the repo back on the branch the user had checked out, so
-        # the next run starts from their code rather than the previous run's
-        # fixes. Anything a crash or Ctrl+C left mid-fix-pass is committed to
-        # the sandbox branch first, so it's kept for review and doesn't leave
-        # a dirty tree that blocks the next run.
-        if git_utils.commit_tracked_changes(repo, "zweigeeks: partial fixes (run interrupted)"):
-            _emit(on_event, "commit", {"iteration": "interrupted", "changed": True})
-        git_utils.return_to_original_branch(repo, original_branch)
-        _emit(on_event, "branch_restored", {"branch": original_branch, "fixes_on": branch_name})
+        # Reached on success, on errors and on Ctrl+C: whatever was fixed so
+        # far still goes to the user's working tree, then the worktree goes.
+        try:
+            diff = git_utils.worktree_diff(worktree)
+            landed = git_utils.apply_to_working_tree(repo_path, worktree, runlog.dir)
+            if landed["applied"] or landed["skipped"]:
+                _emit(on_event, "fixes_applied", {
+                    "files": landed["applied"], "skipped": landed["skipped"],
+                    "skipped_patch": landed["skipped_patch"],
+                })
+        except Exception as exc:  # noqa: BLE001 - cleanup below must still run
+            _emit(on_event, "fixes_apply_failed", {"error": str(exc), "patch": str(runlog.dir / "fixes.patch")})
+        finally:
+            git_utils.remove_worktree(repo, worktree)
+            _emit(on_event, "worktree_removed", {})
 
     pdf_path = None
     try:
@@ -359,12 +361,14 @@ def run_pipeline(
     except Exception as exc:  # noqa: BLE001 - a report failure shouldn't hide the audit results
         _emit(on_event, "pdf_report_failed", {"error": str(exc)})
 
+    runlog.note(
+        files_applied=landed["applied"], files_skipped=landed["skipped"],
+        skipped_patch=landed["skipped_patch"], fixes_patch=landed["fixes_patch"],
+    )
     _emit(
         on_event,
         "pipeline_done",
         {
-            "branch": branch_name,
-            "original_branch": original_branch,
             "stop_reason": final_state["stop_reason"],
             "diff_lines": len(diff.splitlines()),
             "pdf_path": pdf_path,
@@ -372,15 +376,8 @@ def run_pipeline(
     )
     final_state["diff"] = diff
     final_state["pdf_path"] = pdf_path
+    final_state["applied_files"] = landed["applied"]
+    final_state["skipped_files"] = landed["skipped"]
+    final_state["skipped_patch"] = landed["skipped_patch"]
     final_state["summary"] = _finish_summary(runlog, final_state["report"], final_state["stop_reason"], on_event)
-    final_state["original_branch"] = original_branch
-    final_state["review_branch"] = None
-    final_state["review_files"] = []
-    if apply_fixes and diff.strip():
-        try:
-            review, files = git_utils.open_for_review(repo, original_branch, branch_name)
-            final_state["review_branch"], final_state["review_files"] = review, files
-            _emit(on_event, "fixes_in_working_copy", {"branch": review, "files": files})
-        except Exception as exc:  # noqa: BLE001 - the fixes are still on the sandbox branch
-            _emit(on_event, "fixes_in_working_copy_failed", {"error": str(exc)})
     return final_state

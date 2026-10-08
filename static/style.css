@@ -139,10 +139,6 @@ input[type="text"], input[type="number"] {
 .segmented input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: -2px; }
 .segmented input:disabled + label { cursor: not-allowed; }
 
-.check { display: flex; gap: 0.55rem; align-items: flex-start; font-size: var(--t-sm); color: var(--ink); cursor: pointer; }
-.check input { margin: 0.2rem 0 0; width: 1rem; height: 1rem; accent-color: var(--fixer); flex: none; }
-.check.is-disabled { opacity: 0.45; }
-
 .form-hint, .form-error { margin: 0; font-size: var(--t-sm); }
 .form-hint { color: var(--ink-2); }
 .form-hint code { color: var(--ink); }
@@ -162,31 +158,21 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .btn-primary:not(:disabled):hover { filter: brightness(1.1); }
 
-.btn-fixer {
-  min-height: 2.5rem;
-  padding: 0 1rem;
-  border: 0;
-  border-radius: 8px;
-  background: var(--fixer);
-  color: #0c2a23;
-  font-weight: 700;
-}
-.btn-fixer:not(:disabled):hover { filter: brightness(1.1); }
-
-.review-result {
-  margin-top: 0.75rem;
-  padding: 0.65rem 0.75rem;
+.working-tree {
+  margin: 0.9rem 0 0;
+  padding: 0.55rem 0.75rem;
   border-radius: 8px;
   background: var(--fixer-tint);
+  color: var(--ink);
   font-size: var(--t-sm);
-  overflow-wrap: anywhere;
+  font-weight: 600;
 }
-.review-result.is-error { background: var(--high-tint); color: var(--high); }
-.review-result p { margin: 0; color: var(--ink); }
-.review-result.is-error p { color: var(--high); }
-.review-result ul { margin: 0.4rem 0; padding-left: 1.1rem; }
-.review-result code { color: var(--ink); }
-.review-result .hint { color: var(--ink-2); margin-top: 0.3rem; }
+
+.skipped { margin-top: 0.6rem; font-size: var(--t-sm); }
+.skipped summary { cursor: pointer; color: var(--medium); font-weight: 600; }
+.skipped ul { margin: 0.4rem 0; padding-left: 1.1rem; }
+.skipped li { margin-bottom: 0.25rem; overflow-wrap: anywhere; }
+.skipped p { margin: 0.3rem 0 0; color: var(--ink-2); overflow-wrap: anywhere; }
 
 .btn-secondary {
   display: inline-flex;
@@ -220,18 +206,6 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .outcome h2 { font-size: var(--t-md); margin-bottom: 0.35rem; }
 .outcome p { margin: 0; color: var(--ink-2); font-size: var(--t-sm); }
 .outcome-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.9rem; }
-
-.review-cmd {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  margin-top: 0.75rem;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: #12122a;
-  padding-left: 0.6rem;
-}
-.review-cmd code { overflow-x: auto; white-space: nowrap; padding: 0.4rem 0; font-size: var(--t-xs); }
 
 /* ---------- agent cards ---------- */
 

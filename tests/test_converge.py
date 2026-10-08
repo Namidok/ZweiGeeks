@@ -10,10 +10,9 @@ from __future__ import annotations
 
 from unittest import mock
 
-import pytest
 from conftest import ollama_reply, write
 
-from src import config, git_utils, graph
+from src import config, graph
 from src.agents import auditor, fixer
 from src.schemas import AuditReport, Category, Finding, FixAttempt, Severity
 
@@ -29,17 +28,11 @@ HANDLER = (
 
 def state(repo_path, max_iterations=5):
     return {
-        "repo_path": str(repo_path), "branch_name": "zweigeeks/test", "iteration": 0,
+        "repo_path": str(repo_path), "iteration": 0,
         "max_iterations": max_iterations, "report": AuditReport(), "fix_attempts": [],
         "done": False, "stop_reason": None, "consecutive_fix_timeouts": 0,
         "history": {}, "improvements": [],
     }
-
-
-@pytest.fixture
-def no_git(monkeypatch):
-    monkeypatch.setattr(git_utils, "open_repo", mock.Mock())
-    monkeypatch.setattr(git_utils, "commit_files", mock.Mock(return_value=False))
 
 
 def eval_finding(**kw):
@@ -60,7 +53,7 @@ def run_graph(repo_path, reports, max_iterations=5):
     return final, events, run_audit
 
 
-def test_a_file_less_high_finding_never_keeps_the_loop_going(tmp_path, no_git, monkeypatch):
+def test_a_file_less_high_finding_never_keeps_the_loop_going(tmp_path, monkeypatch):
     apply_fix = mock.Mock()
     monkeypatch.setattr(fixer, "apply_fix", apply_fix)
     dependency = Finding(id="SEC-002", category=Category.SECURITY, severity=Severity.HIGH,
@@ -75,7 +68,7 @@ def test_a_file_less_high_finding_never_keeps_the_loop_going(tmp_path, no_git, m
     apply_fix.assert_not_called()
 
 
-def test_a_pass_that_applies_nothing_stops_with_no_progress(tmp_path, no_git, monkeypatch):
+def test_a_pass_that_applies_nothing_stops_with_no_progress(tmp_path, monkeypatch):
     rejected = mock.Mock(side_effect=lambda repo, f, **_: FixAttempt(
         finding_id=f.id, file=f.file, patch_applied=False, notes="nope", reason="not_verified"))
     monkeypatch.setattr(fixer, "apply_fix", rejected)
@@ -90,7 +83,7 @@ def test_a_pass_that_applies_nothing_stops_with_no_progress(tmp_path, no_git, mo
     assert finding.needs_manual_fix and "gave up after 3 attempts" in finding.fix_notes
 
 
-def test_rejected_fix_is_retried_with_the_reason_and_a_new_seed_at_most_n_times(tmp_path, no_git, monkeypatch):
+def test_rejected_fix_is_retried_with_the_reason_and_a_new_seed_at_most_n_times(tmp_path, monkeypatch):
     write(tmp_path, "handler.py", HANDLER)
     seeds, prompts = [], []
     # The model keeps using a name it never imports - the undefined_name gate
@@ -120,7 +113,7 @@ def test_rejected_fix_is_retried_with_the_reason_and_a_new_seed_at_most_n_times(
     assert final["stop_reason"] == "no_progress"
 
 
-def test_a_retry_that_succeeds_ends_the_retries(tmp_path, no_git, monkeypatch):
+def test_a_retry_that_succeeds_ends_the_retries(tmp_path, monkeypatch):
     calls = iter([
         FixAttempt(finding_id="SEC-001", file="handler.py", patch_applied=False, notes="n", reason="edit_mismatch"),
         FixAttempt(finding_id="SEC-001", file="handler.py", patch_applied=True, notes="ok"),
@@ -138,7 +131,7 @@ def test_a_retry_that_succeeds_ends_the_retries(tmp_path, no_git, monkeypatch):
     assert final["stop_reason"] == "no_blocking_findings"
 
 
-def test_file_level_rejections_are_not_retried(tmp_path, no_git, monkeypatch):
+def test_file_level_rejections_are_not_retried(tmp_path, monkeypatch):
     apply_fix = mock.Mock(side_effect=lambda repo, f, **_: FixAttempt(
         finding_id=f.id, file=f.file, patch_applied=False, notes="gone", reason="file_missing"))
     monkeypatch.setattr(fixer, "apply_fix", apply_fix)
@@ -191,7 +184,7 @@ def test_review_cache_can_be_switched_off(vuln_repo, monkeypatch):
     assert calls.call_count == 4  # 2 files x 2 audits
 
 
-def test_improvements_are_generated_once_per_run(tmp_path, no_git, monkeypatch):
+def test_improvements_are_generated_once_per_run(tmp_path, monkeypatch):
     seen = []
 
     def audit(repo, on_event=None, improvements=True):

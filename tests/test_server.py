@@ -108,7 +108,7 @@ def test_audit_only_job_never_runs_the_pipeline(client, monkeypatch, repo, pdf):
     assert body["mode"] == "audit"
     result = body["result"]
     assert result["stop_reason"] == "audit_only"
-    assert result["branch"] is None
+    assert result["applied_files"] == [] and result["skipped_files"] == []
     assert result["fix_attempts"] == [] and result["diff"] == ""
     assert result["improvements"] == ["add CI"]
     assert result["has_pdf"] is True
@@ -131,17 +131,19 @@ def test_audit_only_incomplete_review_is_not_reported_as_done_clean(client, monk
     assert client.get(f"/api/jobs/{job_id}/report").status_code == 404
 
 
-def test_fix_job_reports_branch_attempts_and_diff(client, monkeypatch, repo, pdf):
-    def fake_pipeline(repo_path, max_iterations, on_event=None, apply_fixes=False):
+def test_fix_job_reports_applied_and_skipped_files_and_the_diff(client, monkeypatch, repo, pdf):
+    def fake_pipeline(repo_path, max_iterations, on_event=None):
         assert max_iterations == 2
-        on_event("branch_created", {"branch": "zweigeeks/1", "from": "main"})
+        on_event("worktree_created", {})
         return {
             "report": AuditReport(findings=[_finding(fixed=True)]),
             "stop_reason": "no_blocking_findings",
-            "branch_name": "zweigeeks/1",
             "fix_attempts": [FixAttempt(finding_id="SEC-001", file="app.py", patch_applied=True, notes="ok")],
             "diff": "diff --git a/app.py b/app.py\n",
             "pdf_path": pdf,
+            "applied_files": ["app.py"],
+            "skipped_files": [{"file": "b.py", "reason": "you have uncommitted changes in this file"}],
+            "skipped_patch": "audit_results/run/skipped.patch",
         }
 
     monkeypatch.setattr(server, "run_pipeline", fake_pipeline)
@@ -151,7 +153,10 @@ def test_fix_job_reports_branch_attempts_and_diff(client, monkeypatch, repo, pdf
     assert body["max_iterations"] == 2
     result = body["result"]
     assert result["mode"] == "fix"
-    assert result["branch"] == "zweigeeks/1"
+    assert result["applied_files"] == ["app.py"]
+    assert result["skipped_files"][0]["file"] == "b.py"
+    assert result["skipped_patch"].endswith("skipped.patch")
+    assert "branch" not in result and "review_branch" not in result
     assert result["fix_attempts"][0]["patch_applied"] is True
     assert result["diff"].startswith("diff --git")
 
@@ -191,48 +196,3 @@ def test_pipeline_crash_surfaces_as_job_error(client, monkeypatch, repo):
 
 def test_unknown_job_report_is_404(client):
     assert client.get("/api/jobs/nope/report").status_code == 404
-
-
-def test_review_endpoint_puts_the_fixes_in_the_repo_uncommitted(client, monkeypatch, repo):
-    from src import git_utils
-
-    def fake_pipeline(repo_path, max_iterations, on_event=None, apply_fixes=False):
-        r = git_utils.open_repo(repo_path)
-        base = r.active_branch.name
-        branch = git_utils.create_sandbox_branch(r)
-        (repo / "app.py").write_text("print('fixed')\n")
-        git_utils.commit_files(r, ["app.py"], "zweigeeks: pass 1 fixes")
-        diff = git_utils.diff_against(r, base)
-        git_utils.return_to_original_branch(r, base)
-        return {
-            "report": AuditReport(), "stop_reason": "no_blocking_findings", "branch_name": branch,
-            "original_branch": base, "fix_attempts": [], "diff": diff, "pdf_path": None,
-        }
-
-    monkeypatch.setattr(server, "run_pipeline", fake_pipeline)
-    job_id = client.post("/api/jobs", json={"repo_path": str(repo)}).json()["job_id"]
-    result = _wait_for(client, job_id)["result"]
-
-    body = client.post(f"/api/jobs/{job_id}/review").json()
-
-    assert body["review_branch"] == f"{result['branch']}-review"
-    assert body["files"] == ["app.py"]
-    assert (repo / "app.py").read_text() == "print('fixed')\n"
-    # Asking twice explains instead of clobbering the review branch.
-    assert "already open for review" in client.post(f"/api/jobs/{job_id}/review").json()["error"]
-
-
-def test_review_endpoint_needs_a_finished_fix_run(client, monkeypatch, repo):
-    monkeypatch.setattr(server, "run_audit_only", lambda repo_path, on_event=None: {"report": AuditReport(), "pdf_path": None})
-    job_id = client.post("/api/jobs", json={"repo_path": str(repo), "mode": "audit"}).json()["job_id"]
-    _wait_for(client, job_id)
-    assert "audit-and-fix" in client.post(f"/api/jobs/{job_id}/review").json()["error"]
-    assert client.post("/api/jobs/nope/review").status_code == 404
-
-
-def test_refuses_to_start_on_a_leftover_sandbox_branch(client, repo):
-    git(repo, "checkout", "-q", "-b", "zweigeeks/1791385133")
-    body = client.post("/api/jobs", json={"repo_path": str(repo)}).json()
-    assert "sandbox branch from an earlier run" in body["error"]
-    # Audit-only never branches, so it's still allowed.
-    assert "job_id" in client.post("/api/jobs", json={"repo_path": str(repo), "mode": "audit"}).json()

@@ -142,5 +142,14 @@ def format_summary(s: dict) -> str:
         out.append(f"  {role:<24}{v['calls']:>7}{v['seconds']:>10}")
     out.append(f"  {'total':<24}{s['llm_total']['calls']:>7}{s['llm_total']['seconds']:>10}")
     out.append("")
+    if "files_applied" in s:
+        out.append(f"Changed in your working tree: {len(s['files_applied'])} file(s)")
+        for f in s["files_applied"]:
+            out.append(f"  {f}")
+        for f in s.get("files_skipped") or []:
+            out.append(f"  SKIPPED {f['file']}: {f['reason']}")
+        if s.get("skipped_patch"):
+            out.append(f"  skipped patch: {s['skipped_patch']}")
+        out.append("")
     out.append(f"Log: {s['log_path']}")
     return "\n".join(out)

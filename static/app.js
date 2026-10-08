@@ -103,12 +103,10 @@
       mode,
       maxIterations,
       live, // started from this page, as opposed to picked up after a reload
-      baseBranch: null,
       finished: false,
       toolRows: new Map(),
       fixRows: new Map(),
       review: null,
-      reviewOpened: null,
       applied: 0,
       rejected: 0,
     };
@@ -200,9 +198,8 @@
   // ---------- event handlers ----------
 
   const handlers = {
-    branch_created({ branch, from }) {
-      run.baseBranch = from;
-      systemRow(["Created sandbox branch ", { code: branch }, " from ", { code: from }]);
+    worktree_created() {
+      systemRow("Working on a private copy of your latest commit. Your files aren't touched until the run ends.");
     },
 
     iteration_start({ iteration }) {
@@ -365,13 +362,12 @@
       logRow("fixer", "error", "Fix pass stopped", [{ prose: "The model kept timing out." }]);
     },
 
-    commit({ iteration, changed }) {
+    fix_pass_done({ iteration, changed }) {
       settleFixRows();
-      if (iteration === "interrupted") {
-        systemRow("Committed partial fixes from the interrupted run", "warn");
-        return;
-      }
-      handoffRow("auditor", changed ? `Committed fix pass ${iteration}, back to the Auditor` : `Fix pass ${iteration} changed nothing`);
+      handoffRow(
+        "auditor",
+        changed ? `Fix pass ${iteration} done, ${plural(changed, "fix", "fixes")}. Back to the Auditor` : `Fix pass ${iteration} changed nothing`,
+      );
       setAgent("fixer", "Waiting for findings", false);
     },
 
@@ -395,17 +391,17 @@
       setAgent("fixer", "Done", false);
     },
 
-    branch_restored({ branch, fixes_on }) {
-      systemRow(["Switched back to ", { code: branch }, ". Fixes are on ", { code: fixes_on }]);
+    worktree_removed() { /* nothing to show */ },
+
+    fixes_applied({ files, skipped }) {
+      if (files.length) systemRow(workingTreeLine(files.length), "ok");
+      if (skipped.length) {
+        systemRow(`Skipped ${plural(skipped.length, "file")} you've changed yourself or that no longer match`, "warn");
+      }
     },
 
-    fixes_in_working_copy({ branch, files }) {
-      run.review = { review_branch: branch, files };
-      systemRow([`Put ${plural(files.length, "fixed file")} in your working copy on `, { code: branch }, ", uncommitted"], "ok");
-    },
-
-    fixes_in_working_copy_failed({ error }) {
-      systemRow(`Couldn't put the fixes in your working copy: ${error}`, "warn");
+    fixes_apply_failed({ error, patch }) {
+      systemRow(`Couldn't apply the fixes to your working tree: ${error}. They're saved in ${patch}`, "error");
     },
 
     audit_only_done({ finding_count, blocking }) {
@@ -520,7 +516,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-        repo_path: repoPath, max_iterations: maxIterations, mode, apply_fixes: $("apply-fixes").checked,
+        repo_path: repoPath, max_iterations: maxIterations, mode,
       }),
       });
       data = await response.json().catch(() => null);
@@ -578,16 +574,13 @@
   function syncMode() {
     const audit = ui.form.elements.mode.value === "audit";
     ui.maxIter.disabled = audit;
-    $("apply-fixes").disabled = audit;
     $("passes-field").classList.toggle("is-disabled", audit);
-    $("apply-field").classList.toggle("is-disabled", audit);
     $("mode-hint").replaceChildren(
       audit
         ? document.createTextNode("Read-only: you get findings and a PDF report. Nothing in the repository is changed.")
-        : richText([
-          "Fixes are committed to a new ", { code: "zweigeeks/…" },
-          " branch. Your own branch is never changed, pushed or merged.",
-        ]),
+        : document.createTextNode(
+          "Fixes are made in a private copy of your latest commit, then applied to your working tree as uncommitted changes. Nothing is committed, staged or pushed.",
+        ),
     );
   }
   for (const radio of ui.form.querySelectorAll('input[name="mode"]')) {
@@ -605,12 +598,8 @@
     const findings = result.findings || [];
     const applied = (result.fix_attempts || []).filter((a) => a.patch_applied).length;
     const blocking = findings.filter(isBlocking).length;
-    const branch = result.branch;
-    const reason = result.stop_reason || "";
-    const fixesLine = !applied ? ""
-      : result.review_branch
-        ? `${plural(applied, "fix", "fixes")} are in your working copy on ${result.review_branch}, uncommitted. Open Source Control in VS Code to see them. `
-        : `${plural(applied, "fix", "fixes")} committed to ${branch}. `;
+    const landed = (result.applied_files || []).length;
+    const fixesLine = landed ? `${plural(landed, "file")} changed in your working tree. ` : "";
 
     if (reason.endsWith("_incomplete")) {
       const why = ABORT_REASONS[reason.replace(/_incomplete$/, "")] || humanize(reason);
@@ -632,7 +621,7 @@
         state: "ok",
         title: "No blocking findings left",
         detail: applied
-          ? `${fixesLine}${result.review_branch ? "Commit the ones you want to keep." : "Review the branch before merging it."}`
+          ? `${fixesLine}Review them in Source Control before committing.`
           : "Nothing high severity needed fixing, so no changes were made.",
       };
     }
@@ -676,10 +665,9 @@
   function renderFailure(error) {
     renderVerdict({ state: "error", title: "Run failed", detail: error });
     $("open-report").hidden = true;
-    $("review-btn").hidden = true;
-    $("review-result").hidden = true;
     $("pdf-link").hidden = true;
-    $("review-cmd").hidden = true;
+    $("working-tree").hidden = true;
+    $("skipped").hidden = true;
   }
 
   function renderResults(result) {
@@ -690,18 +678,7 @@
     pdf.hidden = !result.has_pdf;
     pdf.href = `/api/jobs/${encodeURIComponent(run.jobId)}/report`;
 
-    const hasDiff = Boolean(result.diff && result.diff.trim());
-    const base = result.base_branch || run.baseBranch || "main";
-    $("review-cmd").hidden = !(result.branch && hasDiff);
-    if (result.branch) {
-      $("review-cmd-text").textContent = `git diff ${base}..${result.branch}`;
-    }
-    $("review-btn").hidden = !(result.branch && hasDiff) || Boolean(result.review_branch);
-    $("review-btn").disabled = false;
-    $("review-result").hidden = true;
-    if (result.review_branch) {
-      showReviewResult({ review_branch: result.review_branch, files: result.review_files || [] });
-    }
+    renderWorkingTree(result);
 
     renderFindings(result.findings || []);
     renderAttempts(result.fix_attempts || [], result.mode);
@@ -717,48 +694,30 @@
 
   $("open-report").addEventListener("click", openReport);
 
-  // Puts the fixes in the repo as uncommitted changes on a review branch,
-  // so they show up in the editor's source-control view.
-  $("review-btn").addEventListener("click", async () => {
-    const btn = $("review-btn");
-    const box = $("review-result");
-    btn.disabled = true;
-    let data;
-    try {
-      const res = await fetch(`/api/jobs/${encodeURIComponent(run.jobId)}/review`, { method: "POST" });
-      data = await res.json();
-    } catch {
-      data = { error: "Can't reach the ZweiGeeks server." };
-    }
-    box.hidden = false;
-    box.replaceChildren();
-    if (data.error) {
-      box.className = "review-result is-error";
-      box.append(el("p", null, data.error));
-      btn.disabled = false;
-      return;
-    }
-    btn.hidden = true;
-    showReviewResult(data);
-  });
+  const workingTreeLine = (n) => `${plural(n, "file")} changed in your working tree. Open Source Control to review.`;
 
-  function showReviewResult(data) {
-    const box = $("review-result");
-    box.hidden = false;
-    box.className = "review-result";
-    box.replaceChildren(richText([
-      "Your repo is now on ", { code: data.review_branch },
-      ` with ${plural(data.files.length, "fixed file")} left uncommitted. In VS Code, open Source Control to see each change:`,
-    ]));
-    const list = el("ul");
-    for (const f of data.files) {
-      const li = el("li");
-      li.append(el("code", null, f));
-      list.append(li);
+  function renderWorkingTree(result) {
+    const files = result.applied_files || [];
+    const skipped = result.skipped_files || [];
+    const line = $("working-tree");
+    line.hidden = !files.length;
+    line.textContent = files.length ? workingTreeLine(files.length) : "";
+
+    const box = $("skipped");
+    box.hidden = !skipped.length;
+    if (skipped.length) {
+      $("skipped-summary").textContent = `${plural(skipped.length, "file")} skipped, not overwritten`;
+      const list = $("skipped-list");
+      list.replaceChildren();
+      for (const item of skipped) {
+        const li = el("li");
+        li.append(el("code", null, item.file), document.createTextNode(`: ${item.reason}`));
+        list.append(li);
+      }
+      $("skipped-patch").textContent = result.skipped_patch ? `Their fixes are saved in ${result.skipped_patch}` : "";
     }
-    box.append(list);
-    box.append(el("p", "hint", "Keep them: commit on this branch. Throw them away: discard the changes, then switch back to your branch."));
   }
+
   $("close-report").addEventListener("click", () => ui.report.close());
   // Clicking the dimmed backdrop closes the dialog too.
   ui.report.addEventListener("click", (e) => {
@@ -873,7 +832,7 @@
     if (!lines.length) {
       view.append(el("p", "empty", mode === "audit"
         ? "Audit-only runs don't change any files."
-        : "No changes were committed to the sandbox branch."));
+        : "The Fixer didn't change any files."));
       return;
     }
     const pre = el("pre", "diff");
@@ -890,7 +849,7 @@
     pre.append(frag);
     view.append(pre);
     if (lines.length > MAX_DIFF_LINES) {
-      view.append(el("p", "empty", `Showing the first ${MAX_DIFF_LINES} of ${lines.length} lines. Use the git command on the outcome card for the rest.`));
+      view.append(el("p", "empty", `Showing the first ${MAX_DIFF_LINES} of ${lines.length} lines. The full patch is in your run's audit_results folder (fixes.patch).`));
     }
   }
 
@@ -934,19 +893,6 @@
       }
     });
   }
-
-  // ---------- copy the review command ----------
-
-  $("copy-cmd").addEventListener("click", async () => {
-    const btn = $("copy-cmd");
-    try {
-      await navigator.clipboard.writeText($("review-cmd-text").textContent);
-      btn.textContent = "Copied";
-    } catch {
-      btn.textContent = "Copy failed";
-    }
-    setTimeout(() => { btn.textContent = "Copy"; }, 1600);
-  });
 
   // ---------- boot ----------
 

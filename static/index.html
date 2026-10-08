@@ -13,7 +13,7 @@
     <aside class="col col-left">
       <header class="panel brand">
         <h1>ZweiGeeks</h1>
-        <p>Two local agents audit a git repository and fix what they can on a sandbox branch.</p>
+        <p>Two local agents audit a git repository and fix what they can. The fixes land in your working tree, uncommitted.</p>
         <dl class="runtime" id="runtime" aria-label="Model configuration">
           <div><dt>Auditor</dt><dd id="cfg-auditor">…</dd></div>
           <div><dt>Fixer</dt><dd id="cfg-fixer">…</dd></div>
@@ -44,11 +44,6 @@
           <input id="max-iterations" name="max_iterations" type="number" min="1" max="20" value="5">
         </div>
 
-        <label class="check" id="apply-field">
-          <input type="checkbox" id="apply-fixes" name="apply_fixes" checked>
-          <span>Put the fixes in my working copy when the run ends, so my editor shows them</span>
-        </label>
-
         <p class="form-hint" id="mode-hint"></p>
         <p class="form-error" id="form-error" role="alert" hidden></p>
         <button type="submit" class="btn-primary" id="start-btn">Start run</button>
@@ -59,14 +54,14 @@
         <p id="outcome-detail"></p>
         <div class="outcome-actions">
           <button type="button" class="btn-primary" id="open-report">Open report</button>
-          <button type="button" class="btn-fixer" id="review-btn" hidden>Show fixes in my editor</button>
           <a class="btn-secondary" id="pdf-link" href="#" download hidden>Download PDF</a>
         </div>
-        <div class="review-result" id="review-result" role="status" hidden></div>
-        <div class="review-cmd" id="review-cmd" hidden>
-          <code id="review-cmd-text"></code>
-          <button type="button" class="btn-quiet" id="copy-cmd">Copy</button>
-        </div>
+        <p class="working-tree" id="working-tree" hidden></p>
+        <details class="skipped" id="skipped" hidden>
+          <summary id="skipped-summary"></summary>
+          <ul id="skipped-list"></ul>
+          <p id="skipped-patch"></p>
+        </details>
       </section>
     </aside>
 

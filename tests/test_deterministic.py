@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 
-from src import git_utils, graph
+from src import graph
 from src.agents import auditor, deterministic, fixer
 from src.schemas import AuditReport, Category, Finding, Severity
 
@@ -91,8 +91,6 @@ def test_deterministic_work_alone_keeps_the_loop_going(audited, monkeypatch):
     """Only LOW ruff and file-bound pip-audit findings: nothing for the LLM,
     but the fix pass still runs - and the re-audit sees them gone."""
     repo, first = audited
-    monkeypatch.setattr(git_utils, "open_repo", mock.Mock())
-    monkeypatch.setattr(git_utils, "commit_files", mock.Mock(return_value=True))
     llm_fix = mock.Mock()
     monkeypatch.setattr(fixer, "apply_fix", llm_fix)
     first.findings = [f for f in first.findings if f.source_tool in ("ruff", "pip-audit")]
@@ -100,7 +98,7 @@ def test_deterministic_work_alone_keeps_the_loop_going(audited, monkeypatch):
     monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: next(reports))
 
     final = graph.build_graph().invoke({
-        "repo_path": str(repo), "branch_name": "b", "iteration": 0, "max_iterations": 5,
+        "repo_path": str(repo), "iteration": 0, "max_iterations": 5,
         "report": AuditReport(), "fix_attempts": [], "done": False, "stop_reason": None,
         "consecutive_fix_timeouts": 0, "history": {}, "improvements": [],
     }, config={"recursion_limit": 50})

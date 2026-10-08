@@ -1,9 +1,7 @@
 from unittest import mock
 
-import pytest
-from conftest import git, write
 
-from src import config, git_utils, graph
+from src import config, graph
 from src.agents import auditor, fixer
 from src.schemas import AuditReport, Category, Finding, FixAttempt, Severity
 
@@ -21,18 +19,11 @@ def minor(fid="QA-001"):
 
 def initial_state(max_iterations=5):
     return {
-        "repo_path": "/nonexistent", "branch_name": "zweigeeks/test", "iteration": 0,
+        "repo_path": "/nonexistent", "iteration": 0,
         "max_iterations": max_iterations, "report": AuditReport(), "fix_attempts": [],
         "done": False, "stop_reason": None, "consecutive_fix_timeouts": 0,
         "history": {}, "improvements": [],
     }
-
-
-@pytest.fixture
-def no_git(monkeypatch):
-    """fix_node commits each pass; these tests only care about routing."""
-    monkeypatch.setattr(git_utils, "open_repo", mock.Mock())
-    monkeypatch.setattr(git_utils, "commit_files", mock.Mock(return_value=False))
 
 
 def run(monkeypatch, reports, attempts=None, max_iterations=5):
@@ -54,7 +45,7 @@ def run(monkeypatch, reports, attempts=None, max_iterations=5):
 
 # --- stop reasons -------------------------------------------------------------
 
-def test_incomplete_audit_never_reports_clean_even_with_zero_findings(monkeypatch, no_git):
+def test_incomplete_audit_never_reports_clean_even_with_zero_findings(monkeypatch):
     final, events, _, apply_fix = run(monkeypatch, [
         lambda: AuditReport(findings=[], audit_incomplete=True, incomplete_reason="ollama_wedged"),
     ])
@@ -65,7 +56,7 @@ def test_incomplete_audit_never_reports_clean_even_with_zero_findings(monkeypatc
     apply_fix.assert_not_called()
 
 
-def test_incomplete_audit_takes_precedence_over_blocking_findings(monkeypatch, no_git):
+def test_incomplete_audit_takes_precedence_over_blocking_findings(monkeypatch):
     final, _, _, apply_fix = run(monkeypatch, [
         lambda: AuditReport(findings=[blocking()], audit_incomplete=True, incomplete_reason="ollama_error"),
     ])
@@ -74,7 +65,7 @@ def test_incomplete_audit_takes_precedence_over_blocking_findings(monkeypatch, n
     apply_fix.assert_not_called()  # don't "fix" on the back of a half-finished audit
 
 
-def test_no_blocking_findings_ends_the_loop(monkeypatch, no_git):
+def test_no_blocking_findings_ends_the_loop(monkeypatch):
     final, events, _, apply_fix = run(monkeypatch, [lambda: AuditReport(findings=[minor()])])
 
     assert final["stop_reason"] == "no_blocking_findings"
@@ -83,7 +74,7 @@ def test_no_blocking_findings_ends_the_loop(monkeypatch, no_git):
     apply_fix.assert_not_called()
 
 
-def test_iteration_budget_stops_a_loop_that_keeps_finding_new_issues(monkeypatch, no_git):
+def test_iteration_budget_stops_a_loop_that_keeps_finding_new_issues(monkeypatch):
     # Every pass fixes something, but every audit turns up something new.
     final, events, run_audit, apply_fix = run(
         monkeypatch, [lambda i=i: AuditReport(findings=[blocking(f"SEC-00{i}")]) for i in range(1, 5)],
@@ -101,7 +92,7 @@ def fixed(repo, f, on_event=None, **_):
     return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
 
 
-def test_fix_then_reaudit_clean(monkeypatch, no_git):
+def test_fix_then_reaudit_clean(monkeypatch):
     final, _, _, _ = run(
         monkeypatch,
         [lambda: AuditReport(findings=[blocking()]), lambda: AuditReport(findings=[])],
@@ -119,7 +110,7 @@ def timed_out(repo, f, on_event=None, **_):
     return FixAttempt(finding_id=f.id, file=f.file, patch_applied=False, notes="timeout", timed_out=True)
 
 
-def test_fix_node_stops_after_n_consecutive_timeouts(monkeypatch, no_git):
+def test_fix_node_stops_after_n_consecutive_timeouts(monkeypatch):
     monkeypatch.setattr(config, "OLLAMA_MAX_CONSECUTIVE_TIMEOUTS", 3)
     five = [blocking(f"SEC-00{i}") for i in range(1, 6)]
 
@@ -131,10 +122,9 @@ def test_fix_node_stops_after_n_consecutive_timeouts(monkeypatch, no_git):
     assert final["stop_reason"] == "fixer_ollama_timeouts"
     assert run_audit.call_count == 1  # no re-audit after a wedged fix pass
     assert ("fix_pass_aborted", {"reason": "ollama_wedged"}) in events
-    git_utils.commit_files.assert_called_once()  # whatever did get fixed is still committed
 
 
-def test_fix_timeout_count_carries_across_passes(monkeypatch, no_git):
+def test_fix_timeout_count_carries_across_passes(monkeypatch):
     # Pass 1 fixes one finding, then times out twice (under the threshold of
     # 3); the counter has to survive into pass 2 for its first timeout to trip it.
     monkeypatch.setattr(config, "OLLAMA_MAX_CONSECUTIVE_TIMEOUTS", 3)
@@ -154,7 +144,7 @@ def test_fix_timeout_count_carries_across_passes(monkeypatch, no_git):
     assert run_audit.call_count == 2
 
 
-def test_a_non_timeout_attempt_resets_the_timeout_count(monkeypatch, no_git):
+def test_a_non_timeout_attempt_resets_the_timeout_count(monkeypatch):
     monkeypatch.setattr(config, "OLLAMA_MAX_CONSECUTIVE_TIMEOUTS", 2)
     monkeypatch.setattr(config, "FIXER_MAX_ATTEMPTS_PER_FINDING", 1)
     outcomes = iter([True, False, True, False])
@@ -171,105 +161,3 @@ def test_a_non_timeout_attempt_resets_the_timeout_count(monkeypatch, no_git):
 
     assert apply_fix.call_count == 4  # the breaker never tripped
     assert final["stop_reason"] == "no_progress"
-
-
-# --- full pipeline on a real throwaway repo -----------------------------------
-
-def _committed_repo(git_repo, content="x = 1\n"):
-    write(git_repo, "app.py", content)
-    git(git_repo, "add", "-A")
-    git(git_repo, "commit", "-q", "-m", "initial")
-    return git_repo
-
-
-def test_run_pipeline_fixes_on_sandbox_branch_and_restores_original(git_repo, tmp_path, monkeypatch):
-    _committed_repo(git_repo, "eval(input())\n")
-    original = git_utils.open_repo(str(git_repo)).active_branch.name
-    monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
-
-    reports = iter([AuditReport(findings=[blocking(file="app.py")]), AuditReport(findings=[minor()])])
-    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: next(reports))
-
-    def fix(repo, f, on_event=None, **_):
-        (git_repo / f.file).write_text("print(input())\n")
-        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
-
-    monkeypatch.setattr(fixer, "apply_fix", fix)
-
-    final = graph.run_pipeline(str(git_repo), max_iterations=3)
-
-    repo = git_utils.open_repo(str(git_repo))
-    assert final["stop_reason"] == "no_blocking_findings"
-    assert repo.active_branch.name == original  # user's branch is checked out again
-    assert (git_repo / "app.py").read_text() == "eval(input())\n"  # and untouched
-    assert final["branch_name"] in [h.name for h in repo.heads]
-    assert "+print(input())" in final["diff"]
-    assert final["pdf_path"] and (tmp_path / "reports" / "audit_report_repo.pdf").exists()
-
-
-def test_run_pipeline_refuses_a_dirty_tree(git_repo, monkeypatch):
-    _committed_repo(git_repo)
-    (git_repo / "app.py").write_text("x = 2\n")
-    run_audit = mock.Mock()
-    monkeypatch.setattr(auditor, "run_audit", run_audit)
-
-    with pytest.raises(RuntimeError, match="uncommitted changes"):
-        graph.run_pipeline(str(git_repo))
-    run_audit.assert_not_called()
-
-
-def test_run_audit_only_never_writes_to_the_repo(git_repo, tmp_path, monkeypatch):
-    _committed_repo(git_repo)
-    monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
-    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: AuditReport(findings=[blocking()]))
-    apply_fix = mock.Mock()
-    monkeypatch.setattr(fixer, "apply_fix", apply_fix)
-
-    result = graph.run_audit_only(str(git_repo))
-
-    apply_fix.assert_not_called()
-    assert len(git_utils.open_repo(str(git_repo)).heads) == 1
-    assert result["pdf_path"].endswith("audit_report_repo.pdf")
-
-
-def test_one_pass_means_one_fix_pass_then_a_check(monkeypatch, no_git):
-    final, events, run_audit, apply_fix = run(
-        monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 2, attempts=fixed, max_iterations=1,
-    )
-
-    assert apply_fix.call_count == 1  # "1 pass" must still let the Fixer work
-    assert run_audit.call_count == 2
-    assert final["stop_reason"] == "max_iterations_reached"
-
-
-def test_run_pipeline_can_hand_the_fixes_to_the_working_copy(git_repo, tmp_path, monkeypatch):
-    _committed_repo(git_repo, "eval(input())\n")
-    original = git_utils.open_repo(str(git_repo)).active_branch.name
-    monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
-    reports = iter([AuditReport(findings=[blocking(file="app.py")]), AuditReport(findings=[])])
-    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: next(reports))
-
-    def fix(repo, f, on_event=None, **_):
-        (git_repo / f.file).write_text("print(input())\n")
-        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
-
-    monkeypatch.setattr(fixer, "apply_fix", fix)
-    events = []
-
-    final = graph.run_pipeline(str(git_repo), max_iterations=1, apply_fixes=True,
-                               on_event=lambda e, p: events.append((e, p)))
-
-    repo = git_utils.open_repo(str(git_repo))
-    assert final["review_branch"] == f"{final['branch_name']}-review"
-    assert repo.active_branch.name == final["review_branch"]
-    assert (git_repo / "app.py").read_text() == "print(input())\n"  # in the working copy...
-    assert [d.a_path for d in repo.index.diff(None)] == ["app.py"]  # ...uncommitted
-    assert repo.git.show(f"{original}:app.py") == "eval(input())"  # user's branch untouched
-    assert ("fixes_in_working_copy", {"branch": final["review_branch"], "files": ["app.py"]}) in events
-
-
-def test_run_pipeline_refuses_to_start_from_a_leftover_sandbox_branch(git_repo):
-    _committed_repo(git_repo)
-    git(git_repo, "checkout", "-q", "-b", "zweigeeks/1791385133")
-    with pytest.raises(RuntimeError, match="sandbox branch from an earlier run"):
-        graph.run_pipeline(str(git_repo))

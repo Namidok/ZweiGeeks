@@ -539,7 +539,7 @@
     go(F, "rack");
     then(F, () => {
       scene.rackBusyUntil = performance.now() + 2500;
-      say(F, changed ? "committed" : "nothing to commit", changed ? "📦" : "🤷");
+      say(F, changed ? "pass saved" : "nothing changed", changed ? "📦" : "🤷");
     });
     pause(F, 900);
     go(F, "fixerIdle");
@@ -577,9 +577,9 @@
   function event(name, p) {
     p = p || {};
     switch (name) {
-      case "branch_created":
+      case "worktree_created":
         scene.rackBusyUntil = performance.now() + 1200;
-        say(F, `branch ${base(p.branch)}`, "🌱");
+        say(F, "private copy ready", "🌱");
         break;
       case "iteration_start":
         scene.board.pass = p.iteration;
@@ -644,7 +644,7 @@
       case "fix_pass_aborted":
         say(F, "model stopped", "💤");
         break;
-      case "commit":
+      case "fix_pass_done":
         commit(p.changed);
         break;
       case "loop_end":
@@ -658,8 +658,8 @@
       case "pdf_report":
         printReport();
         break;
-      case "fixes_in_working_copy":
-        say(F, `${p.files ? p.files.length : 0} fixes in your editor`, "✨");
+      case "fixes_applied":
+        say(F, `${p.files ? p.files.length : 0} files in your working tree`, "✨");
         break;
       case "pdf_report_failed":
         say(A, "printer jammed", "⚠️");

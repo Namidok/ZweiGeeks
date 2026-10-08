@@ -9,7 +9,6 @@ in the wrong interpreter, and the sandbox branch picked up a stray
 from __future__ import annotations
 
 import stat
-import subprocess
 
 import pytest
 from conftest import git, write
@@ -114,60 +113,3 @@ def test_interrupted_run_commits_tracked_edits_but_no_untracked_files(project_re
     assert git_utils.commit_tracked_changes(repo, "partial") is True
     assert repo.git.show("--name-only", "--format=", "HEAD").split() == ["src/app.py"]
     assert ".coverage" in repo.untracked_files
-
-
-# --- reviewing the fixes locally ----------------------------------------------------
-
-@pytest.fixture
-def fixed_repo(project_repo):
-    """The user's branch, plus a sandbox branch holding one fix."""
-    repo = git_utils.open_repo(str(project_repo))
-    base = repo.active_branch.name
-    branch = git_utils.create_sandbox_branch(repo)
-    write(project_repo, "src/app.py", "print('fixed')\n")
-    git_utils.commit_files(repo, ["src/app.py"], "zweigeeks: pass 1 fixes")
-    git_utils.return_to_original_branch(repo, base)
-    return repo, base, branch
-
-
-def test_open_for_review_puts_fixes_in_the_working_tree_uncommitted(fixed_repo, project_repo):
-    repo, base, branch = fixed_repo
-
-    review, files = git_utils.open_for_review(repo, base, branch)
-
-    assert review == f"{branch}-review"
-    assert repo.active_branch.name == review
-    assert files == ["src/app.py"]
-    # Uncommitted, so an editor's source-control view lists it as changed.
-    assert [d.a_path for d in repo.index.diff(None)] == ["src/app.py"]
-    assert (project_repo / "src/app.py").read_text() == "print('fixed')\n"
-    # The user's branch is untouched.
-    assert repo.git.show(f"{base}:src/app.py") == "print('app')"
-
-
-def test_open_for_review_refuses_a_dirty_tree_and_an_existing_review_branch(fixed_repo, project_repo):
-    repo, base, branch = fixed_repo
-    write(project_repo, "src/app.py", "my own edit\n")
-    with pytest.raises(RuntimeError, match="uncommitted changes"):
-        git_utils.open_for_review(repo, base, branch)
-
-    repo.git.checkout("--", ".")
-    repo.create_head(f"{branch}-review")
-    with pytest.raises(RuntimeError, match="already exists"):
-        git_utils.open_for_review(repo, base, branch)
-    assert repo.active_branch.name == base
-
-
-def test_open_for_review_when_the_branch_changed_nothing(project_repo):
-    repo = git_utils.open_repo(str(project_repo))
-    base = repo.active_branch.name
-    branch = git_utils.create_sandbox_branch(repo)
-    git_utils.return_to_original_branch(repo, base)
-
-    with pytest.raises(RuntimeError, match="no changes"):
-        git_utils.open_for_review(repo, base, branch)
-
-    listed = subprocess.run(
-        ["git", "branch", "--list", f"{branch}-review"], cwd=project_repo, capture_output=True, text=True,
-    ).stdout
-    assert listed == ""
