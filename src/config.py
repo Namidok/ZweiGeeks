@@ -8,6 +8,10 @@ load_dotenv()
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 AUDITOR_MODEL = os.environ.get("AUDITOR_MODEL", "qwen2.5-coder:7b")
 FIXER_MODEL = os.environ.get("FIXER_MODEL", "qwen2.5-coder:7b")
+# The model that approves or rejects each proposed fix. Defaults to the
+# auditor's model; a different (e.g. stronger) one makes the check independent
+# of the model that wrote the fix.
+VERIFIER_MODEL = os.environ.get("VERIFIER_MODEL") or AUDITOR_MODEL
 MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", "5"))
 
 # Ollama defaults to a 2048-token context window, which silently truncates

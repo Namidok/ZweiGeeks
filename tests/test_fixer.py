@@ -360,3 +360,49 @@ def test_edit_that_uses_an_undefined_name_is_rejected(repo, monkeypatch):
     assert attempt.patch_applied is False
     assert "aren't defined or imported" in attempt.notes and "sql" in attempt.notes
     assert (repo / "handler.py").read_text() == HANDLER
+
+
+# --- edit matching: tiers and ambiguity -------------------------------------------
+
+def test_search_that_differs_only_in_inner_whitespace_still_matches():
+    # The model copied `shell  =  True` as `shell = True`: the strip() tier
+    # can't match it, the whitespace-collapsing tier can.
+    text = "def f():\n    subprocess.call(cmd, shell  =  True)\n"
+    new, why = fixer._apply_edits(text, [("    subprocess.call(cmd, shell = True)", "    subprocess.call(cmd)")])
+    assert why == "" and new == "def f():\n    subprocess.call(cmd)\n"
+
+
+def test_whitespace_tier_does_not_merge_tokens():
+    # `shell=True` and `shell = True` differ by more than whitespace runs: no match.
+    text = "subprocess.call(cmd, shell=True)\n"
+    new, why = fixer._apply_edits(text, [("subprocess.call(cmd, shell = True)", "x")])
+    assert new is None and "isn't in the file" in why
+
+
+def test_ambiguous_search_picks_the_match_nearest_the_findings_line():
+    text = "a = 1\nx = eval(s)\nb = 2\nc = 3\nx = eval(s)\n"
+    new, why = fixer._apply_edits(text, [("x = eval(s)", "x = ast.literal_eval(s)")], near_line=5)
+    assert why == "" and new == "a = 1\nx = eval(s)\nb = 2\nc = 3\nx = ast.literal_eval(s)\n"
+    new, _ = fixer._apply_edits(text, [("x = eval(s)", "x = ast.literal_eval(s)")], near_line=1)
+    assert new.splitlines()[1] == "x = ast.literal_eval(s)" and new.splitlines()[4] == "x = eval(s)"
+
+
+def test_ambiguous_search_without_a_line_is_still_rejected():
+    text = "x = eval(s)\ny = 1\nx = eval(s)\n"
+    assert fixer._apply_edits(text, [("x = eval(s)", "z")]) == (None, "edit 1's SEARCH text matches 2 places")
+
+
+def test_verifier_model_is_configurable_and_defaults_to_the_auditors(monkeypatch, repo):
+    models = []
+
+    def chat_spy(model, messages, options=None, timeout=None):
+        models.append((messages[0]["content"] == fixer.VERIFY_SYSTEM_PROMPT, model))
+        return ollama_reply(APPROVE if models[-1][0] else EDIT)
+
+    monkeypatch.setattr(fixer, "chat", chat_spy)
+    monkeypatch.setattr(config, "FIXER_MODEL", "fixer-m")
+    monkeypatch.setattr(config, "AUDITOR_MODEL", "auditor-m")
+    monkeypatch.setattr(config, "VERIFIER_MODEL", "verifier-m")
+
+    assert fixer.apply_fix(str(repo), eval_finding()).patch_applied is True
+    assert models == [(False, "fixer-m"), (True, "verifier-m")]

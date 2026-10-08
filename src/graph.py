@@ -21,7 +21,7 @@ from typing import Callable, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from . import config, git_utils
-from .agents import auditor, fixer
+from .agents import auditor, deterministic, fixer
 from .fingerprint import fingerprint_of
 from .ollama_client import call_listener
 from .report import generate_pdf_report
@@ -74,6 +74,23 @@ def _key(finding: Finding) -> str:
     return finding.fingerprint or fingerprint_of(finding)
 
 
+def _relocate(repo_path: str, findings: list[Finding], files: set[str]) -> None:
+    """After an edit, move each remaining finding in the edited files to the
+    line that still holds its flagged text (nearest the old line), so the
+    Fixer's window and edit matching aren't aimed at a stale line number."""
+    for finding in findings:
+        if finding.fixed or finding.file not in files or not finding.line_text:
+            continue
+        try:
+            lines = (Path(repo_path) / finding.file).read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        hits = [n for n, line in enumerate(lines, 1) if line.strip() == finding.line_text]
+        if hits:
+            old = finding.line or hits[0]
+            finding.line = min(hits, key=lambda n: abs(n - old))
+
+
 def _plan(state: "AgentState") -> list[Finding]:
     """The findings the next fix pass will attempt, most severe first.
 
@@ -114,6 +131,7 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
         state["report"] = report
         state["iteration"] += 1
         todo = _plan(state)
+        mechanical = deterministic.pending(report)
         if runlog:
             runlog.audit(state["iteration"], report)
 
@@ -125,7 +143,7 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
             state["done"] = True
             state["stop_reason"] = f"{reason}_incomplete"
             _emit(on_event, "loop_end", {"reason": f"incomplete_{reason}", "blocking_count": len(todo)})
-        elif not todo:
+        elif not todo and not mechanical:
             stuck = [f for f in report.fixable_findings(config.FIXER_MIN_SEVERITY)] + [
                 f for f in report.open_findings() if f.needs_manual_fix
             ]
@@ -141,9 +159,9 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
             # audit, so the last audit checks the last fixes; only then stop.
             state["done"] = True
             state["stop_reason"] = "max_iterations_reached"
-            _emit(on_event, "loop_end", {"reason": "budget_exhausted", "remaining": len(todo)})
+            _emit(on_event, "loop_end", {"reason": "budget_exhausted", "remaining": len(todo) + len(mechanical)})
         else:
-            _emit(on_event, "loop_continue", {"blocking_count": len(todo)})
+            _emit(on_event, "loop_continue", {"blocking_count": len(todo) + len(mechanical)})
         return state
 
     def route_after_audit(state: AgentState) -> str:
@@ -153,9 +171,20 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
         return "end" if state["done"] else "audit"
 
     def fix_node(state: AgentState) -> AgentState:
-        todo = _plan(state)[: config.FIXER_MAX_FIXES_PER_PASS]
         edited: set[str] = set()
         applied = 0
+        # Deterministic fixes first: no model, no gates to fail.
+        for finding, attempt in deterministic.run(state["repo_path"], state["report"], on_event):
+            state["fix_attempts"].append(attempt)
+            if runlog:
+                runlog.fix_attempt(state["iteration"], finding, attempt)
+            if attempt.patch_applied:
+                applied += 1
+                if attempt.file:
+                    edited.add(attempt.file)
+        _relocate(state["repo_path"], state["report"].findings, edited)
+
+        todo = _plan(state)[: config.FIXER_MAX_FIXES_PER_PASS]
         for finding in todo:
             if state["done"]:
                 break
@@ -210,6 +239,7 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
                     finding.fix_notes = attempt.notes
                     if attempt.file:
                         edited.add(attempt.file)
+                        _relocate(state["repo_path"], todo, {attempt.file})
                     break
                 if attempt.reason in _NOT_RETRYABLE or attempt.reason == "ollama_unreachable":
                     break

@@ -34,6 +34,7 @@ from ..fingerprint import assign_fingerprints
 from ..ollama_client import OllamaTimeout, chat, extract_content, llm_role
 from ..schemas import AuditReport, Category, Finding, Severity
 from ..tools import api_checks, project, quality, repo_hygiene, security, stack_detect, ui_checks
+from . import deterministic
 
 EventCallback = Optional[Callable[[str, dict], None]]
 
@@ -121,6 +122,7 @@ class _FindingCollector:
         source_tool: str = "tool",
         resolution: Optional[str] = None,
         rule: Optional[str] = None,
+        autofix: Optional[dict] = None,
     ) -> None:
         prefix = _SEVERITY_PREFIX[category]
         self._counters[prefix] = self._counters.get(prefix, 0) + 1
@@ -136,6 +138,7 @@ class _FindingCollector:
                 resolution=resolution,
                 source_tool=source_tool,
                 rule=rule,
+                autofix=autofix,
             )
         )
 
@@ -364,7 +367,12 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
         pip_audit_deps, pip_audit_raw = security.run_pip_audit(repo_path)
         raw_outputs["pip-audit"] = pip_audit_raw
         pip_audit_count = 0
+        try:
+            requirements = (Path(repo_path) / deterministic.REQUIREMENTS).read_text()
+        except OSError:
+            requirements = ""
         for dep in pip_audit_deps:
+            pin = deterministic.find_pin(requirements, dep.get("name", "")) if dep.get("name") else None
             for vuln in dep.get("vulns") or []:
                 pip_audit_count += 1
                 fix_versions = vuln.get("fix_versions") or []
@@ -386,6 +394,13 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
                     f"{dep.get('name', '')} {dep.get('version', '')}.",
                     source_tool="pip-audit",
                     rule=f"{dep.get('name', '')}:{vuln.get('id', '')}",
+                    file=deterministic.REQUIREMENTS if pin else None,
+                    line=pin[0] if pin else None,
+                    # A pin bump fixes it without the LLM (see agents/deterministic.py).
+                    autofix={
+                        "tool": "pin", "package": dep.get("name"), "version": dep.get("version"),
+                        "fix_versions": fix_versions,
+                    } if pin and fix_versions else None,
                     title=f"{dep.get('name', 'dependency')} {dep.get('version', '')}: "
                     f"{vuln.get('id', 'vulnerability')}",
                     resolution=resolution,
@@ -402,6 +417,8 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
                 line=(issue.get("location") or {}).get("row"),
                 source_tool="ruff", title=issue.get("code", "Ruff finding"),
                 rule=issue.get("code"),
+                # ruff --fix applies only fixes it marks safe.
+                autofix={"tool": "ruff"} if (issue.get("fix") or {}).get("applicability") == "safe" else None,
                 resolution=(
                     f"Run `ruff check --fix` to auto-fix where possible, or address "
                     f"rule {issue.get('code', '')} manually."

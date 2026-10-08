@@ -70,7 +70,7 @@ def test_index_and_static_assets_are_served(client):
 
 def test_config_exposes_models_and_defaults(client):
     body = client.get("/api/config").json()
-    assert set(body) == {"ollama_host", "auditor_model", "fixer_model", "max_iterations"}
+    assert set(body) == {"ollama_host", "auditor_model", "fixer_model", "verifier_model", "max_iterations"}
 
 
 def test_rejects_unreachable_ollama(client, monkeypatch, repo):

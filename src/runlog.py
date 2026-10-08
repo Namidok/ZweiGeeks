@@ -34,7 +34,7 @@ class RunLog:
         self._audits: list[dict] = []
         self._extra: dict = {}
         self.write("run_start", repo=repo_path, mode=mode, models={
-            "auditor": config.AUDITOR_MODEL, "fixer": config.FIXER_MODEL,
+            "auditor": config.AUDITOR_MODEL, "fixer": config.FIXER_MODEL, "verifier": config.VERIFIER_MODEL,
         })
 
     # --- recording ---------------------------------------------------------

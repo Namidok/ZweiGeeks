@@ -238,7 +238,7 @@ def _verify_fix(finding: Finding, original: str, new_content: str) -> tuple[bool
         user_msg += f"\n\n--- FILE AFTER CHANGE ---\n{new_content}"
     with llm_role("verifier"):
         response = chat(
-            model=config.AUDITOR_MODEL,
+            model=config.VERIFIER_MODEL,
             messages=[
                 {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -330,12 +330,31 @@ def _leading_ws(line: str) -> str:
     return line[: len(line) - len(line.lstrip())]
 
 
-def _apply_edits(text: str, edits: list[tuple[str, str]]) -> tuple[Optional[str], str]:
+def _collapse_ws(line: str) -> str:
+    """Whitespace-insensitive form of a line: runs of whitespace become one
+    space, and the edges are trimmed. `shell = True` == `shell=True` is NOT
+    treated as equal (that would make spaces around operators ambiguous with
+    tokens), but `shell  =  True` == `shell = True` is."""
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def _nearest(hits: list[int], line: Optional[int]) -> int:
+    """The hit closest to the finding's line (1-based), else the first."""
+    if not line:
+        return hits[0]
+    return min(hits, key=lambda i: abs(i + 1 - line))
+
+
+def _apply_edits(
+    text: str, edits: list[tuple[str, str]], near_line: Optional[int] = None,
+) -> tuple[Optional[str], str]:
     """Applies edits in order. Matching is on whole lines (a SEARCH of
-    `echo $x;` must not match inside `    echo $x;` mid-line), exact first,
-    then ignoring surrounding whitespace since small models often get
-    indentation slightly off - in which case the replacement is re-indented
-    to match the file. Each SEARCH must match exactly one place. Returns
+    `echo $x;` must not match inside `    echo $x;` mid-line), in three tiers:
+    exact; ignoring surrounding whitespace (small models often get
+    indentation slightly off - the replacement is then re-indented to match
+    the file); and ignoring runs of whitespace inside lines. When a SEARCH
+    matches several places, the one nearest `near_line` (the finding's line)
+    is edited; with no line to go by, it's rejected as ambiguous. Returns
     (new_text, "") or (None, why it failed).
     """
     lines = text.split("\n")
@@ -346,9 +365,10 @@ def _apply_edits(text: str, edits: list[tuple[str, str]]) -> tuple[Optional[str]
         new_lines = replace.split("\n") if replace else []
         hits = _find_block(lines, wanted, lambda line: line)
         if not hits:
-            hits = _find_block(lines, wanted, str.strip)
-            if len(hits) == 1:
-                file_indent, search_indent = _leading_ws(lines[hits[0]]), _leading_ws(wanted[0])
+            hits = _find_block(lines, wanted, str.strip) or _find_block(lines, wanted, _collapse_ws)
+            if hits:
+                i = _nearest(hits, near_line) if len(hits) == 1 or near_line else hits[0]
+                file_indent, search_indent = _leading_ws(lines[i]), _leading_ws(wanted[0])
                 first_new = next((line for line in new_lines if line.strip()), "")
                 # Re-indent only when REPLACE is off by the same amount as
                 # SEARCH; if the model already indented REPLACE correctly, keep it.
@@ -359,10 +379,11 @@ def _apply_edits(text: str, edits: list[tuple[str, str]]) -> tuple[Optional[str]
                 ):
                     extra = file_indent[len(search_indent):]
                     new_lines = [extra + line if line.strip() else line for line in new_lines]
-        if len(hits) != 1:
-            where = f"matches {len(hits)} places" if hits else "isn't in the file"
-            return None, f"edit {n}'s SEARCH text {where}"
-        i = hits[0]
+        if not hits:
+            return None, f"edit {n}'s SEARCH text isn't in the file"
+        if len(hits) > 1 and not near_line:
+            return None, f"edit {n}'s SEARCH text matches {len(hits)} places"
+        i = _nearest(hits, near_line)
         lines[i : i + len(wanted)] = new_lines
     return "\n".join(lines), ""
 
@@ -765,7 +786,7 @@ def _apply_fix(
         messages.append({"role": "assistant", "content": reply})
         edits = _parse_edits(reply)
         if edits:
-            new_lf, why = _apply_edits(original_lf, edits)
+            new_lf, why = _apply_edits(original_lf, edits, near_line=finding.line)
             reason = "edit_mismatch"
         else:
             new_lf, why = None, f"the reply had no usable SEARCH/REPLACE edit blocks: {reply[:200]!r}"

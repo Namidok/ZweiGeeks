@@ -43,12 +43,32 @@ def project_files(repo_path: str, suffixes: Optional[Iterable[str]] = None) -> l
             if p.is_file() and not any(part in _FALLBACK_EXCLUDE_DIRS for part in p.relative_to(root).parts)
         ]
     files = []
+    venv_dirs: dict[Path, bool] = {}
     for rel in rels:
         if wanted is not None and Path(rel).suffix.lower() not in wanted:
+            continue
+        if _is_dependency(root, Path(rel), venv_dirs):
             continue
         if (root / rel).is_file():  # tracked-but-deleted files are listed too
             files.append(rel)
     return sorted(set(files))
+
+
+# Third-party code, skipped even when a project commits it or forgets to
+# gitignore it: the audit is about the project's own code.
+_DEPENDENCY_DIRS = {"node_modules", "site-packages", "vendor", "__pycache__"}
+
+
+def _is_dependency(root: Path, rel: Path, venv_dirs: dict[Path, bool]) -> bool:
+    if any(part in _DEPENDENCY_DIRS for part in rel.parts[:-1]):
+        return True
+    # Any folder holding a pyvenv.cfg is a virtualenv, whatever it's called.
+    for parent in list(rel.parents)[:-1]:
+        if parent not in venv_dirs:
+            venv_dirs[parent] = (root / parent / "pyvenv.cfg").is_file()
+        if venv_dirs[parent]:
+            return True
+    return False
 
 
 def project_python(repo_path: str) -> Optional[str]:

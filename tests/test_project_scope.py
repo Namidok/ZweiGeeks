@@ -37,6 +37,21 @@ def test_project_files_skip_gitignored_dirs_but_keep_untracked_source(project_re
     assert files == ["src/app.py", "src/new_module.py"]
 
 
+def test_committed_virtualenvs_and_dependency_dirs_are_skipped_even_when_tracked(git_repo):
+    # A project that commits its venv (or doesn't gitignore it) under any name.
+    write(git_repo, "app.py", "x = 1\n")
+    write(git_repo, "pyenv311/pyvenv.cfg", "home = /usr/bin\n")
+    write(git_repo, "pyenv311/lib/python3.11/site-packages/dep.py", "import pickle\n")
+    write(git_repo, "pyenv311/bin/tool.py", "x = 2\n")
+    write(git_repo, "web/node_modules/pkg/index.js", "eval(x)\n")
+    write(git_repo, "web/vendor/lib.php", "<?php eval($x);\n")
+    write(git_repo, "web/app.js", "let x = 1;\n")
+    git(git_repo, "add", "-A")
+    git(git_repo, "commit", "-q", "-m", "everything committed")
+
+    assert project.project_files(str(git_repo)) == ["app.py", "web/app.js"]
+
+
 def test_model_review_only_sees_project_files(project_repo):
     found = auditor._discover_source_files(str(project_repo), max_files=30, max_chars=12000)
     assert [p.relative_to(project_repo).as_posix() for p in found] == ["src/app.py"]

@@ -138,6 +138,7 @@ def get_config() -> dict:
         "ollama_host": config.OLLAMA_HOST,
         "auditor_model": config.AUDITOR_MODEL,
         "fixer_model": config.FIXER_MODEL,
+        "verifier_model": config.VERIFIER_MODEL,
         "max_iterations": config.MAX_ITERATIONS,
     }
 
