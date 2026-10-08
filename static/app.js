@@ -74,6 +74,9 @@
     removed_definition: "it deleted existing functions",
     breaks_import: "the module stopped importing, so it was rolled back",
     undefined_name: "it used a name that isn't defined anywhere",
+    no_file: "the finding has no file to edit",
+    file_missing: "the file isn't there any more",
+    file_too_large: "the file is too large and the finding has no line to focus on",
   };
 
   const WHO = { auditor: "Auditor", fixer: "Fixer", system: "Run" };
@@ -377,6 +380,8 @@
       const messages = {
         clean: ["No blocking findings left", "ok"],
         budget_exhausted: [`Out of passes with ${plural(remaining ?? 0, "blocking finding")} open`, "warn"],
+        no_progress: ["Stopped: that pass couldn't fix anything, so another audit wouldn't change anything", "warn"],
+        needs_manual_fix: [`${plural(remaining ?? 0, "finding")} need a manual fix: the Fixer ran out of attempts`, "warn"],
         fixer_ollama_timeouts: ["Stopped: the Fixer's model calls kept timing out", "error"],
       };
       let entry = messages[reason];
@@ -638,6 +643,16 @@
         detail: `${fixesLine}Fix the rest by hand, or run again with more passes.`,
       };
     }
+    if (reason === "no_progress" || reason === "needs_manual_fix") {
+      const manual = findings.filter((f) => f.needs_manual_fix).length;
+      return {
+        state: applied ? "ok" : "warn",
+        title: applied
+          ? `${plural(applied, "fix", "fixes")} applied, ${plural(manual, "finding")} left for you`
+          : "The Fixer couldn't fix these findings",
+        detail: `${fixesLine}Findings marked "Needs manual fix" used up their attempts; each one's notes say why the last edit was rejected.`,
+      };
+    }
     if (reason === "fixer_ollama_timeouts") {
       return {
         state: "error",
@@ -795,6 +810,9 @@
     if (f.fixed) {
       statusText = "Fixed";
       statusClass = "status-fixed";
+    } else if (f.needs_manual_fix) {
+      statusText = "Needs manual fix";
+      statusClass = "status-human";
     } else if (f.source_tool === "repo-hygiene" && isHigh(f)) {
       // Never sent to the Fixer: rotating a key or restoring a file is a human job.
       statusText = "Needs a human";

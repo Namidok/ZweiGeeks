@@ -128,5 +128,6 @@ def test_python_tool_output_is_mapped_straight_to_findings(tmp_path, monkeypatch
     assert by_tool["pytest"].category == Category.TESTING
     assert "Depends" in by_tool["api-routes"].resolution
     assert set(report.raw_tool_output) == {"bandit", "pip-audit", "ruff", "pytest"}
-    # Only the HIGH bandit and pip-audit findings would route to the Fixer.
-    assert [f.source_tool for f in report.blocking_findings()] == ["bandit", "pip-audit"]
+    # Only the HIGH bandit finding routes to the LLM Fixer: the HIGH pip-audit
+    # one has no file to edit (a pin bump handles it without the LLM).
+    assert [f.source_tool for f in report.blocking_findings()] == ["bandit"]

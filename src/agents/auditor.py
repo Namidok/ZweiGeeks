@@ -24,6 +24,7 @@ v2 does three kinds of work, in order of how much we trust them:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Callable, Optional
@@ -63,6 +64,9 @@ Output ONLY a JSON array, nothing else:
 "line": 12, "title": "short title", "detail": "1-3 sentences, specific to this file", \
 "resolution": "1-2 sentences: the concrete fix"}]
 """
+
+# Part of the review cache key: editing the review prompt invalidates the cache.
+_REVIEW_PROMPT_VERSION = hashlib.sha256(FILE_REVIEW_SYSTEM_PROMPT.encode()).hexdigest()[:12]
 
 IMPROVEMENT_SYSTEM_PROMPT = """You are a principal engineer giving high-level improvement \
 suggestions for a repository, based on a summary of issues already found by a security/quality \
@@ -215,7 +219,43 @@ def _review_file_with_llm(
     return items
 
 
-def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
+def _review_cache_path(file_path: Path, repo_root: Path, model: str) -> Optional[Path]:
+    """Where the review of this exact file content by this model and prompt is
+    cached. Keyed by content, so an edited file is always reviewed again."""
+    if not config.REVIEW_CACHE:
+        return None
+    try:
+        content = file_path.read_bytes()
+    except OSError:
+        return None
+    key = hashlib.sha256(b"\0".join([
+        str(file_path.relative_to(repo_root)).encode(), hashlib.sha256(content).digest(),
+        model.encode(), _REVIEW_PROMPT_VERSION.encode(), str(config.AUDIT_MAX_FILE_CHARS).encode(),
+    ])).hexdigest()
+    root = Path(config.REVIEW_CACHE_DIR or Path(config.REPORTS_DIR) / ".review_cache")
+    return root / key[:2] / f"{key}.json"
+
+
+def _cached_review(file_path: Path, repo_root: Path, model: str) -> Optional[list[dict]]:
+    path = _review_cache_path(file_path, repo_root, model)
+    if path and path.is_file():
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _store_review(file_path: Path, repo_root: Path, model: str, items: list[dict]) -> None:
+    path = _review_cache_path(file_path, repo_root, model)
+    if path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(items))
+
+
+def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool = True) -> AuditReport:
+    """`improvements=False` skips the summarising model call (re-audits in
+    the fix loop reuse the first audit's suggestions)."""
     raw_outputs: dict[str, str] = {}
     collector = _FindingCollector()
 
@@ -448,14 +488,23 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
     files_errored = 0
     last_error_timed_out = False
     incomplete_reason: Optional[str] = None
+    cache_hits = 0
     for f in files:
         rel = str(f.relative_to(repo_path))
-        _emit(on_event, "file_review_file", {"file": rel})
+        items = _cached_review(f, Path(repo_path), config.AUDITOR_MODEL)
+        _emit(on_event, "file_review_file", {"file": rel, "cached": items is not None})
+        if items is not None:
+            cache_hits += 1
+            files_reviewed += 1
+            _collect_llm_items(collector, items)
+            continue
         try:
             items = _review_file_with_llm(
                 config.AUDITOR_MODEL, f, Path(repo_path),
                 config.AUDIT_MAX_FILE_CHARS, config.OLLAMA_NUM_CTX,
             )
+            if items is not None:
+                _store_review(f, Path(repo_path), config.AUDITOR_MODEL, items)
         except Exception as exc:  # noqa: BLE001 - counted below; one file's failure shouldn't kill the audit
             consecutive_failures += 1
             files_failed += 1
@@ -481,18 +530,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
             _emit(on_event, "file_review_unparseable", {"file": rel})
             continue
         files_reviewed += 1
-        for item in items:
-            try:
-                collector.add(
-                    Category(item.get("category", "quality")),
-                    Severity(item.get("severity", "low")),
-                    item.get("detail", ""),
-                    file=item.get("file"), line=item.get("line"),
-                    source_tool="llm-review", title=item.get("title", "Finding"),
-                    resolution=item.get("resolution"),
-                )
-            except (ValueError, TypeError):
-                continue
+        _collect_llm_items(collector, items)
     if files and files_reviewed == 0 and incomplete_reason is None:
         if files_errored == files_failed:
             # Every file hit an Ollama error - name that, not just "nothing reviewed".
@@ -503,18 +541,36 @@ def run_audit(repo_path: str, on_event: EventCallback = None) -> AuditReport:
     _emit(on_event, "file_review_done", {"files_reviewed": files_reviewed, "files_failed": files_failed})
 
     # --- 4. improvements pass: one cheap summarizing call, not per-file ---
-    _emit(on_event, "improvements_start", {})
-    improvements = _generate_improvements(collector.findings, sorted(stack))
-    _emit(on_event, "improvements_done", {"count": len(improvements)})
+    suggestions: list[str] = []
+    if improvements:
+        _emit(on_event, "improvements_start", {})
+        suggestions = _generate_improvements(collector.findings, sorted(stack))
+        _emit(on_event, "improvements_done", {"count": len(suggestions)})
 
     assign_fingerprints(collector.findings, repo_path)
     return AuditReport(
         findings=collector.findings,
         raw_tool_output=raw_outputs,
-        improvements=improvements,
+        improvements=suggestions,
+        review_cache_hits=cache_hits,
         audit_incomplete=incomplete_reason is not None,
         incomplete_reason=incomplete_reason,
     )
+
+
+def _collect_llm_items(collector: _FindingCollector, items: list[dict]) -> None:
+    for item in items:
+        try:
+            collector.add(
+                Category(item.get("category", "quality")),
+                Severity(item.get("severity", "low")),
+                item.get("detail", ""),
+                file=item.get("file"), line=item.get("line"),
+                source_tool="llm-review", title=item.get("title", "Finding"),
+                resolution=item.get("resolution"),
+            )
+        except (ValueError, TypeError, AttributeError):
+            continue
 
 
 def _generate_improvements(findings: list[Finding], stack: list[str]) -> list[str]:

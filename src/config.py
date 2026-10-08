@@ -82,3 +82,23 @@ FIXER_NUM_PREDICT = int(os.environ.get("FIXER_NUM_PREDICT", "2048"))
 # the edit and doesn't after, the edit is rolled back and rejected.
 FIXER_IMPORT_CHECK = os.environ.get("FIXER_IMPORT_CHECK", "1") != "0"
 FIXER_IMPORT_TIMEOUT_SECONDS = int(os.environ.get("FIXER_IMPORT_TIMEOUT_SECONDS", "120"))
+
+# --- making the audit -> fix loop converge ---------------------------------
+
+# Lowest severity the LLM Fixer works on. Findings are attempted most
+# severe first; anything below this is reported but never sent to the model
+# (ruff's own safe fixes and dependency pin bumps run regardless).
+FIXER_MIN_SEVERITY = os.environ.get("FIXER_MIN_SEVERITY", "medium").lower()
+# Most findings the LLM Fixer attempts in one pass (most severe first).
+FIXER_MAX_FIXES_PER_PASS = int(os.environ.get("FIXER_MAX_FIXES_PER_PASS", "8"))
+# A finding whose fixes keep being rejected is retried - with the rejection
+# reason in the prompt and a different seed - at most this many times, then
+# marked needs_manual_fix.
+FIXER_MAX_ATTEMPTS_PER_FINDING = int(os.environ.get("FIXER_MAX_ATTEMPTS_PER_FINDING", "3"))
+
+# Cache of per-file LLM reviews, keyed by file path, content hash, model and
+# prompt version: re-audits only re-review files that changed. Set
+# REVIEW_CACHE=0 to always ask the model. Defaults to <REPORTS_DIR>/.review_cache.
+REVIEW_CACHE = os.environ.get("REVIEW_CACHE", "1") != "0"
+REVIEW_CACHE_DIR = os.environ.get("REVIEW_CACHE_DIR")
+

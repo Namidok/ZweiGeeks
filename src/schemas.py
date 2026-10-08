@@ -49,6 +49,14 @@ class Finding(BaseModel):
     )
     fixed: bool = False
     fix_notes: Optional[str] = None
+    needs_manual_fix: bool = Field(
+        default=False, description="The Fixer gave up on it (out of attempts, or nothing it can change)."
+    )
+    autofix: Optional[dict] = Field(
+        default=None,
+        description="Set when a deterministic fixer can handle it without the LLM: {'tool': 'ruff'} "
+        "for ruff's safe fixes, {'tool': 'pin', 'package', 'version', 'fix_versions'} for pip-audit.",
+    )
 
     def report_bucket(self) -> str:
         """Collapses the 5 internal severities into the 3-tier red/yellow/green
@@ -68,6 +76,9 @@ class AuditReport(BaseModel):
         default_factory=list,
         description="Broader, strategic suggestions - not tied to a single finding.",
     )
+    review_cache_hits: int = Field(
+        default=0, description="Files whose LLM review came from the cache (unchanged since last reviewed)."
+    )
     audit_incomplete: bool = Field(
         default=False,
         description="True if the per-file LLM review was aborted early (e.g. Ollama "
@@ -85,22 +96,35 @@ class AuditReport(BaseModel):
     def open_findings(self) -> list[Finding]:
         return [f for f in self.findings if not f.fixed]
 
-    def blocking_findings(self) -> list[Finding]:
-        """Findings the Fixer should attempt, and that keep the audit<->fix
-        loop going. repo-hygiene findings (committed secrets, broken
-        require/include targets) are deliberately excluded: they're facts
-        about the filesystem/git history, not something a full-file LLM
-        rewrite can safely resolve - rotating a leaked credential or
-        restoring a missing shared file needs a human, and letting the
-        Fixer guess at either risks corrupting the file further. They still
-        show up in the report; they just never route to the Fixer or block
-        the loop from finishing.
+    def fixable_findings(self, min_severity: "Severity | str" = "high") -> list[Finding]:
+        """Open findings the LLM Fixer can act on, most severe first.
+
+        Excluded, because no edit to a file by the Fixer can resolve them:
+        findings without a file (a whole-suite pytest failure), repo-hygiene
+        findings (a leaked key needs rotating, a missing file restoring),
+        pip-audit findings (handled by the deterministic pin bump instead),
+        and findings the Fixer already gave up on. Only fixable findings can
+        keep the audit<->fix loop going; everything else is just reported.
         """
-        return [
+        floor = _SEVERITY_RANK[Severity(min_severity)]
+        fixable = [
             f for f in self.open_findings()
-            if f.severity in (Severity.CRITICAL, Severity.HIGH)
-            and f.source_tool != "repo-hygiene"
+            if f.file
+            and f.source_tool not in _NOT_LLM_FIXABLE
+            and not f.needs_manual_fix
+            and _SEVERITY_RANK[f.severity] >= floor
         ]
+        return sorted(fixable, key=lambda f: (
+            -_SEVERITY_RANK[f.severity], f.category != Category.SECURITY, f.file or "", f.line or 0,
+        ))
+
+    def blocking_findings(self) -> list[Finding]:
+        """Fixable CRITICAL/HIGH findings (see fixable_findings)."""
+        return self.fixable_findings(Severity.HIGH)
+
+
+_SEVERITY_RANK = {Severity.INFO: 0, Severity.LOW: 1, Severity.MEDIUM: 2, Severity.HIGH: 3, Severity.CRITICAL: 4}
+_NOT_LLM_FIXABLE = {"repo-hygiene", "pytest", "pip-audit"}
 
 
 class FixAttempt(BaseModel):

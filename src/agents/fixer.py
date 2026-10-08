@@ -629,20 +629,35 @@ def _reject(on_event: EventCallback, finding: Finding, reason: str, notes: str, 
     )
 
 
-def apply_fix(repo_path: str, finding: Finding, on_event: EventCallback = None) -> FixAttempt:
+def apply_fix(
+    repo_path: str,
+    finding: Finding,
+    on_event: EventCallback = None,
+    previous: Optional[dict] = None,
+    attempt_number: int = 0,
+) -> FixAttempt:
     """Asks the model for a targeted edit, runs it through the gates, and
     writes it if everything passes. The returned attempt carries the
     rejection reason, the time taken and the full conversation (for the run
-    log)."""
+    log).
+
+    `previous` ({"reason", "notes"}) is the last rejection of this same
+    finding: it goes into the prompt, and `attempt_number` shifts the
+    sampling seed, so a retry isn't a byte-identical repeat of a request the
+    model already answered wrongly.
+    """
     started = time.monotonic()
     transcript: list[dict] = []
-    attempt = _apply_fix(repo_path, finding, on_event, transcript)
+    attempt = _apply_fix(repo_path, finding, on_event, transcript, previous, attempt_number)
     attempt.duration_s = round(time.monotonic() - started, 2)
     attempt.transcript = transcript
     return attempt
 
 
-def _apply_fix(repo_path: str, finding: Finding, on_event: EventCallback, transcript: list[dict]) -> FixAttempt:
+def _apply_fix(
+    repo_path: str, finding: Finding, on_event: EventCallback, transcript: list[dict],
+    previous: Optional[dict], attempt_number: int,
+) -> FixAttempt:
     if not finding.file:
         return FixAttempt(
             finding_id=finding.id,
@@ -692,6 +707,13 @@ def _apply_fix(repo_path: str, finding: Finding, on_event: EventCallback, transc
         + (f" (near line {finding.line})" if finding.line else "")
         + f"\n\n--- FILE CONTENT ---\n{view}"
     )
+    if previous:
+        user_msg += (
+            f"\n\nYour previous edit for this issue was rejected because: {previous.get('notes')} "
+            f"({previous.get('reason')}). Make a different edit that avoids that problem: keep it "
+            "as small as possible, copy SEARCH lines exactly from the file, and only use names "
+            "that are already defined or imported."
+        )
 
     messages = transcript
     messages += [
@@ -707,7 +729,12 @@ def _apply_fix(repo_path: str, finding: Finding, on_event: EventCallback, transc
                 response = chat(
                     model=config.FIXER_MODEL,
                     messages=list(messages),
-                    options={"num_ctx": config.OLLAMA_NUM_CTX, "num_predict": config.FIXER_NUM_PREDICT},
+                    options={
+                        "num_ctx": config.OLLAMA_NUM_CTX,
+                        "num_predict": config.FIXER_NUM_PREDICT,
+                        # Fixer calls only: audits and the verifier keep the fixed seed.
+                        "seed": config.OLLAMA_SEED + attempt_number,
+                    },
                     timeout=config.FIXER_TIMEOUT_SECONDS,
                 )
         except OllamaTimeout as exc:

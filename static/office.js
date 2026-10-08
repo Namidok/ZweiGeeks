@@ -564,6 +564,9 @@
     } else if (reason === "budget_exhausted") {
       say(A, "out of passes", "😓");
       say(F, "some left over", "😓");
+    } else if (reason === "no_progress" || reason === "needs_manual_fix") {
+      say(A, "rest needs a human", "🙋");
+      say(F, "out of ideas", "🤷");
     } else if (reason === "fixer_ollama_timeouts") {
       say(F, "model stuck", "💤");
     } else {

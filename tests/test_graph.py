@@ -9,8 +9,9 @@ from src.schemas import AuditReport, Category, Finding, FixAttempt, Severity
 
 
 def blocking(fid="SEC-001", file="app.py"):
+    # Distinct titles give distinct fingerprints, so each is its own finding.
     return Finding(id=fid, category=Category.SECURITY, severity=Severity.HIGH,
-                   title="t", detail="d", source_tool="llm-review", file=file)
+                   title=f"t {fid}", detail="d", source_tool="llm-review", file=file)
 
 
 def minor(fid="QA-001"):
@@ -23,6 +24,7 @@ def initial_state(max_iterations=5):
         "repo_path": "/nonexistent", "branch_name": "zweigeeks/test", "iteration": 0,
         "max_iterations": max_iterations, "report": AuditReport(), "fix_attempts": [],
         "done": False, "stop_reason": None, "consecutive_fix_timeouts": 0,
+        "history": {}, "improvements": [],
     }
 
 
@@ -39,8 +41,8 @@ def run(monkeypatch, reports, attempts=None, max_iterations=5):
     events, run_audit mock, apply_fix mock).
     """
     run_audit = mock.Mock(side_effect=[r() for r in reports])
-    apply_fix = mock.Mock(side_effect=attempts or (lambda repo, f, on_event=None: FixAttempt(
-        finding_id=f.id, file=f.file, patch_applied=False, notes="could not fix")))
+    apply_fix = mock.Mock(side_effect=attempts or (lambda repo, f, on_event=None, **_: FixAttempt(
+        finding_id=f.id, file=f.file, patch_applied=False, notes="could not fix", reason="not_verified")))
     monkeypatch.setattr(auditor, "run_audit", run_audit)
     monkeypatch.setattr(fixer, "apply_fix", apply_fix)
     events = []
@@ -81,9 +83,11 @@ def test_no_blocking_findings_ends_the_loop(monkeypatch, no_git):
     apply_fix.assert_not_called()
 
 
-def test_iteration_budget_stops_an_unfixable_loop(monkeypatch, no_git):
+def test_iteration_budget_stops_a_loop_that_keeps_finding_new_issues(monkeypatch, no_git):
+    # Every pass fixes something, but every audit turns up something new.
     final, events, run_audit, apply_fix = run(
-        monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 4, max_iterations=3,
+        monkeypatch, [lambda i=i: AuditReport(findings=[blocking(f"SEC-00{i}")]) for i in range(1, 5)],
+        attempts=fixed, max_iterations=3,
     )
 
     assert final["stop_reason"] == "max_iterations_reached"
@@ -93,10 +97,11 @@ def test_iteration_budget_stops_an_unfixable_loop(monkeypatch, no_git):
     assert ("loop_end", {"reason": "budget_exhausted", "remaining": 1}) in events
 
 
-def test_fix_then_reaudit_clean(monkeypatch, no_git):
-    def fixed(repo, f, on_event=None):
-        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
+def fixed(repo, f, on_event=None, **_):
+    return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
 
+
+def test_fix_then_reaudit_clean(monkeypatch, no_git):
     final, _, _, _ = run(
         monkeypatch,
         [lambda: AuditReport(findings=[blocking()]), lambda: AuditReport(findings=[])],
@@ -110,7 +115,7 @@ def test_fix_then_reaudit_clean(monkeypatch, no_git):
 
 # --- fixer circuit breaker -----------------------------------------------------
 
-def timed_out(repo, f, on_event=None):
+def timed_out(repo, f, on_event=None, **_):
     return FixAttempt(finding_id=f.id, file=f.file, patch_applied=False, notes="timeout", timed_out=True)
 
 
@@ -130,25 +135,31 @@ def test_fix_node_stops_after_n_consecutive_timeouts(monkeypatch, no_git):
 
 
 def test_fix_timeout_count_carries_across_passes(monkeypatch, no_git):
-    # One blocking finding per pass is fewer than the threshold, so the
-    # counter has to survive between passes for the breaker to ever trip.
+    # Pass 1 fixes one finding, then times out twice (under the threshold of
+    # 3); the counter has to survive into pass 2 for its first timeout to trip it.
     monkeypatch.setattr(config, "OLLAMA_MAX_CONSECUTIVE_TIMEOUTS", 3)
 
+    def fix_a_time_out_rest(repo, f, on_event=None, **kw):
+        return fixed(repo, f) if f.id == "OK" else timed_out(repo, f)
+
     final, _, run_audit, apply_fix = run(
-        monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 3,
-        attempts=timed_out, max_iterations=10,
+        monkeypatch,
+        [lambda: AuditReport(findings=[blocking("OK", "a.py"), blocking("T1", "b.py"), blocking("T2", "c.py")]),
+         lambda: AuditReport(findings=[blocking("T3", "d.py"), blocking("T4", "e.py")])],
+        attempts=fix_a_time_out_rest, max_iterations=10,
     )
 
     assert final["stop_reason"] == "fixer_ollama_timeouts"
-    assert apply_fix.call_count == 3
-    assert run_audit.call_count == 3
+    assert apply_fix.call_count == 4
+    assert run_audit.call_count == 2
 
 
 def test_a_non_timeout_attempt_resets_the_timeout_count(monkeypatch, no_git):
     monkeypatch.setattr(config, "OLLAMA_MAX_CONSECUTIVE_TIMEOUTS", 2)
+    monkeypatch.setattr(config, "FIXER_MAX_ATTEMPTS_PER_FINDING", 1)
     outcomes = iter([True, False, True, False])
 
-    def alternate(repo, f, on_event=None):
+    def alternate(repo, f, on_event=None, **_):
         return FixAttempt(finding_id=f.id, file=f.file, patch_applied=False,
                           notes="n", timed_out=next(outcomes))
 
@@ -158,8 +169,8 @@ def test_a_non_timeout_attempt_resets_the_timeout_count(monkeypatch, no_git):
         attempts=alternate, max_iterations=1,
     )
 
-    assert apply_fix.call_count == 4
-    assert final["stop_reason"] == "max_iterations_reached"
+    assert apply_fix.call_count == 4  # the breaker never tripped
+    assert final["stop_reason"] == "no_progress"
 
 
 # --- full pipeline on a real throwaway repo -----------------------------------
@@ -177,9 +188,9 @@ def test_run_pipeline_fixes_on_sandbox_branch_and_restores_original(git_repo, tm
     monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
 
     reports = iter([AuditReport(findings=[blocking(file="app.py")]), AuditReport(findings=[minor()])])
-    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None: next(reports))
+    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: next(reports))
 
-    def fix(repo, f, on_event=None):
+    def fix(repo, f, on_event=None, **_):
         (git_repo / f.file).write_text("print(input())\n")
         return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
 
@@ -210,7 +221,7 @@ def test_run_pipeline_refuses_a_dirty_tree(git_repo, monkeypatch):
 def test_run_audit_only_never_writes_to_the_repo(git_repo, tmp_path, monkeypatch):
     _committed_repo(git_repo)
     monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
-    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None: AuditReport(findings=[blocking()]))
+    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: AuditReport(findings=[blocking()]))
     apply_fix = mock.Mock()
     monkeypatch.setattr(fixer, "apply_fix", apply_fix)
 
@@ -222,9 +233,6 @@ def test_run_audit_only_never_writes_to_the_repo(git_repo, tmp_path, monkeypatch
 
 
 def test_one_pass_means_one_fix_pass_then_a_check(monkeypatch, no_git):
-    def fixed(repo, f, on_event=None):
-        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
-
     final, events, run_audit, apply_fix = run(
         monkeypatch, [lambda: AuditReport(findings=[blocking()])] * 2, attempts=fixed, max_iterations=1,
     )
@@ -239,9 +247,9 @@ def test_run_pipeline_can_hand_the_fixes_to_the_working_copy(git_repo, tmp_path,
     original = git_utils.open_repo(str(git_repo)).active_branch.name
     monkeypatch.setattr(config, "REPORTS_DIR", str(tmp_path / "reports"))
     reports = iter([AuditReport(findings=[blocking(file="app.py")]), AuditReport(findings=[])])
-    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None: next(reports))
+    monkeypatch.setattr(auditor, "run_audit", lambda repo, on_event=None, **_: next(reports))
 
-    def fix(repo, f, on_event=None):
+    def fix(repo, f, on_event=None, **_):
         (git_repo / f.file).write_text("print(input())\n")
         return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
 

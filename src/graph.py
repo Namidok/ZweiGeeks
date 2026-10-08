@@ -14,16 +14,19 @@ fixes left on the sandbox branch for review.
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Callable, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from . import config, git_utils
 from .agents import auditor, fixer
+from .fingerprint import fingerprint_of
 from .ollama_client import call_listener
 from .report import generate_pdf_report
 from .runlog import RunLog, format_summary
-from .schemas import AuditReport, FixAttempt
+from .schemas import AuditReport, Finding, FixAttempt
 
 EventCallback = Optional[Callable[[str, dict], None]]
 
@@ -40,6 +43,12 @@ class AgentState(TypedDict):
     # Carried across fix passes so the circuit breaker still trips when each
     # pass has fewer blocking findings than OLLAMA_MAX_CONSECUTIVE_TIMEOUTS.
     consecutive_fix_timeouts: int
+    # Per finding fingerprint: {"attempts", "last_reason", "last_notes",
+    # "file_hash"}. The memory between passes that stops the Fixer from
+    # sending the model the same request over and over.
+    history: dict[str, dict]
+    # The first audit's suggestions; re-audits don't regenerate them.
+    improvements: list[str]
 
 
 def _emit(cb: EventCallback, event: str, payload: dict) -> None:
@@ -47,16 +56,67 @@ def _emit(cb: EventCallback, event: str, payload: dict) -> None:
         cb(event, payload)
 
 
+# Rejections that come from the file itself, not from what the model wrote:
+# retrying them on an unchanged file can't turn out differently.
+_NOT_RETRYABLE = {"no_file", "file_missing", "file_too_large"}
+
+
+def _file_hash(repo_path: str, rel: Optional[str]) -> Optional[str]:
+    if not rel:
+        return None
+    try:
+        return hashlib.sha1((Path(repo_path) / rel).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _key(finding: Finding) -> str:
+    return finding.fingerprint or fingerprint_of(finding)
+
+
+def _plan(state: "AgentState") -> list[Finding]:
+    """The findings the next fix pass will attempt, most severe first.
+
+    A finding drops out once it has used FIXER_MAX_ATTEMPTS_PER_FINDING
+    attempts (marked needs_manual_fix), or when its last rejection came from
+    the file itself and the file hasn't changed since.
+    """
+    todo = []
+    for finding in state["report"].fixable_findings(config.FIXER_MIN_SEVERITY):
+        past = state["history"].get(_key(finding))
+        if past:
+            if past["attempts"] >= config.FIXER_MAX_ATTEMPTS_PER_FINDING:
+                finding.needs_manual_fix = True
+                finding.fix_notes = (
+                    f"ZweiGeeks gave up after {past['attempts']} attempts. Last rejection: "
+                    f"{past['last_notes']}"
+                )
+                continue
+            if past["last_reason"] in _NOT_RETRYABLE and past["file_hash"] == _file_hash(
+                state["repo_path"], finding.file
+            ):
+                finding.needs_manual_fix = True
+                finding.fix_notes = past["last_notes"]
+                continue
+        todo.append(finding)
+    return todo
+
+
 def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None):
     def audit_node(state: AgentState) -> AgentState:
         _emit(on_event, "iteration_start", {"iteration": state["iteration"] + 1})
-        report = auditor.run_audit(state["repo_path"], on_event=on_event)
+        first = state["iteration"] == 0
+        report = auditor.run_audit(state["repo_path"], on_event=on_event, improvements=first)
+        if first:
+            state["improvements"] = report.improvements
+        else:
+            report.improvements = state["improvements"]
         state["report"] = report
         state["iteration"] += 1
+        todo = _plan(state)
         if runlog:
             runlog.audit(state["iteration"], report)
 
-        blocking = report.blocking_findings()
         if report.audit_incomplete:
             # The LLM review didn't get to finish - an Ollama problem, not a
             # clean repo. Reporting "clean" here would be actively wrong, so
@@ -64,19 +124,26 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
             reason = report.incomplete_reason or "unknown"
             state["done"] = True
             state["stop_reason"] = f"{reason}_incomplete"
-            _emit(on_event, "loop_end", {"reason": f"incomplete_{reason}", "blocking_count": len(blocking)})
-        elif not blocking:
+            _emit(on_event, "loop_end", {"reason": f"incomplete_{reason}", "blocking_count": len(todo)})
+        elif not todo:
+            stuck = [f for f in report.fixable_findings(config.FIXER_MIN_SEVERITY)] + [
+                f for f in report.open_findings() if f.needs_manual_fix
+            ]
             state["done"] = True
-            state["stop_reason"] = "no_blocking_findings"
-            _emit(on_event, "loop_end", {"reason": "clean"})
+            if stuck:
+                state["stop_reason"] = "needs_manual_fix"
+                _emit(on_event, "loop_end", {"reason": "needs_manual_fix", "remaining": len(stuck)})
+            else:
+                state["stop_reason"] = "no_blocking_findings"
+                _emit(on_event, "loop_end", {"reason": "clean"})
         elif state["iteration"] > state["max_iterations"]:
             # max_iterations counts fix passes. Each one is followed by an
             # audit, so the last audit checks the last fixes; only then stop.
             state["done"] = True
             state["stop_reason"] = "max_iterations_reached"
-            _emit(on_event, "loop_end", {"reason": "budget_exhausted", "remaining": len(blocking)})
+            _emit(on_event, "loop_end", {"reason": "budget_exhausted", "remaining": len(todo)})
         else:
-            _emit(on_event, "loop_continue", {"blocking_count": len(blocking)})
+            _emit(on_event, "loop_continue", {"blocking_count": len(todo)})
         return state
 
     def route_after_audit(state: AgentState) -> str:
@@ -86,36 +153,78 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
         return "end" if state["done"] else "audit"
 
     def fix_node(state: AgentState) -> AgentState:
-        blocking = state["report"].blocking_findings()
+        todo = _plan(state)[: config.FIXER_MAX_FIXES_PER_PASS]
         edited: set[str] = set()
-        for finding in blocking:
-            attempt = fixer.apply_fix(state["repo_path"], finding, on_event=on_event)
-            state["fix_attempts"].append(attempt)
-            if runlog:
-                runlog.fix_attempt(state["iteration"], finding, attempt)
-            if attempt.patch_applied:
-                finding.fixed = True
-                finding.fix_notes = attempt.notes
-                if attempt.file:
-                    edited.add(attempt.file)
-            if attempt.timed_out:
-                state["consecutive_fix_timeouts"] += 1
-                if state["consecutive_fix_timeouts"] >= config.OLLAMA_MAX_CONSECUTIVE_TIMEOUTS:
-                    # Another audit->fix round would just time out again, so
-                    # end the run here (after committing what did get fixed).
-                    state["done"] = True
-                    state["stop_reason"] = "fixer_ollama_timeouts"
-                    _emit(on_event, "fix_pass_aborted", {"reason": "ollama_wedged"})
-                    _emit(on_event, "loop_end", {"reason": "fixer_ollama_timeouts"})
+        applied = 0
+        for finding in todo:
+            if state["done"]:
+                break
+            key = _key(finding)
+            # Retry right away (not next pass): with the no-progress stop, a
+            # finding rejected in a pass where nothing else landed would never
+            # get another chance. Each retry carries the last rejection and a
+            # different seed, so it's never a repeat of the same request.
+            while True:
+                past = state["history"].get(key) or {"attempts": 0}
+                if past["attempts"] >= config.FIXER_MAX_ATTEMPTS_PER_FINDING:
+                    finding.needs_manual_fix = True
+                    finding.fix_notes = (
+                        f"ZweiGeeks gave up after {past['attempts']} attempts. Last rejection: "
+                        f"{past['last_notes']}"
+                    )
                     break
-            else:
+                file_hash = _file_hash(state["repo_path"], finding.file)
+                previous = (
+                    {"reason": past["last_reason"], "notes": past["last_notes"]} if past["attempts"] else None
+                )
+                attempt = fixer.apply_fix(
+                    state["repo_path"], finding, on_event=on_event,
+                    previous=previous, attempt_number=past["attempts"],
+                )
+                state["history"][key] = {
+                    "attempts": past["attempts"] + 1,
+                    "last_reason": attempt.reason,
+                    "last_notes": attempt.notes,
+                    "file_hash": file_hash,
+                }
+                state["fix_attempts"].append(attempt)
+                if runlog:
+                    runlog.fix_attempt(
+                        state["iteration"], finding, attempt, attempt_no=past["attempts"] + 1,
+                        seed=config.OLLAMA_SEED + past["attempts"],
+                    )
+                if attempt.timed_out:
+                    state["consecutive_fix_timeouts"] += 1
+                    if state["consecutive_fix_timeouts"] >= config.OLLAMA_MAX_CONSECUTIVE_TIMEOUTS:
+                        # Another attempt would just time out again, so end
+                        # the run here (keeping whatever did get fixed).
+                        state["done"] = True
+                        state["stop_reason"] = "fixer_ollama_timeouts"
+                        _emit(on_event, "fix_pass_aborted", {"reason": "ollama_wedged"})
+                        _emit(on_event, "loop_end", {"reason": "fixer_ollama_timeouts"})
+                    break  # a slow model won't get faster on a retry
                 state["consecutive_fix_timeouts"] = 0
+                if attempt.patch_applied:
+                    applied += 1
+                    finding.fixed = True
+                    finding.fix_notes = attempt.notes
+                    if attempt.file:
+                        edited.add(attempt.file)
+                    break
+                if attempt.reason in _NOT_RETRYABLE or attempt.reason == "ollama_unreachable":
+                    break
 
         repo = git_utils.open_repo(state["repo_path"])
         changed = git_utils.commit_files(
             repo, sorted(edited), f"zweigeeks: pass {state['iteration']} fixes"
         )
         _emit(on_event, "commit", {"iteration": state["iteration"], "changed": changed})
+        if applied == 0 and not state["done"]:
+            # Nothing changed, so another audit would find the same things and
+            # the next pass would face the same files: stop instead.
+            state["done"] = True
+            state["stop_reason"] = "no_progress"
+            _emit(on_event, "loop_end", {"reason": "no_progress", "remaining": len(todo)})
         return state
 
     graph = StateGraph(AgentState)
@@ -192,6 +301,8 @@ def run_pipeline(
         "done": False,
         "stop_reason": None,
         "consecutive_fix_timeouts": 0,
+        "history": {},
+        "improvements": [],
     }
 
     runlog = RunLog(repo_path, "fix")

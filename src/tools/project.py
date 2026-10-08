@@ -67,7 +67,7 @@ def relative_to_repo(path: Optional[str], repo_path: str) -> Optional[str]:
         return path
     p = Path(path)
     if not p.is_absolute():
-        return path
+        return Path(path).as_posix()  # "./app.py" (bandit) -> "app.py"
     try:
         return str(p.resolve().relative_to(Path(repo_path).resolve()))
     except ValueError:
