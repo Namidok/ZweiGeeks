@@ -4,17 +4,17 @@
 
 :root {
   color-scheme: dark;
-  --bg: #1a1a2e;
-  --panel: rgba(16, 16, 36, 0.92);
-  --panel-raised: #22223e;
-  --border: rgba(124, 108, 240, 0.32);
-  --rule: #2e2e4c;
-  --ink: #ecebf7;
-  --ink-2: #a5a4c4;
-  --auditor: #8c7cf6;
-  --auditor-tint: rgba(140, 124, 246, 0.16);
-  --fixer: #2ec4a0;
-  --fixer-tint: rgba(46, 196, 160, 0.15);
+  --bg: #0f0d26;
+  --panel: rgba(24, 20, 58, 0.92);
+  --panel-raised: #1e1a48;
+  --border: rgba(165, 135, 255, 0.26);
+  --rule: #2e2a68;
+  --ink: #f2f0ff;
+  --ink-2: #aeaadb;
+  --auditor: #b266ff;
+  --auditor-tint: rgba(178, 102, 255, 0.17);
+  --fixer: #3dff93;
+  --fixer-tint: rgba(61, 255, 147, 0.13);
   --high: #ff7d70;
   --high-tint: rgba(255, 125, 112, 0.14);
   --medium: #fdcb6e;
@@ -38,7 +38,8 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: radial-gradient(1200px 700px at 70% -10%, #1d1654 0%, transparent 60%), linear-gradient(165deg, #0e0c24 0%, #15103a 100%) fixed;
+  background-color: var(--bg);
   color: var(--ink);
   font: 400 var(--t-base)/1.5 var(--sans);
 }
@@ -450,3 +451,114 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ================= KAI + JAX redesign ================= */
+
+.panel { border-radius: 14px; box-shadow: 0 8px 28px rgba(5, 3, 22, 0.35); }
+.panel-title { margin: 0 0 0.6rem; font-size: var(--t-sm); font-weight: 700; color: var(--ink-2); }
+.agents { padding-top: 0.9rem; }
+.agent h2 .role { font-size: inherit; font-weight: inherit; color: inherit; }
+.agent-auditor h2 { color: var(--auditor); text-shadow: 0 0 14px rgba(178, 102, 255, 0.5); }
+.agent-fixer h2 { color: var(--fixer); text-shadow: 0 0 14px rgba(61, 255, 147, 0.4); }
+.agent-status { color: var(--ink); }
+.btn-primary { background: var(--auditor); box-shadow: 0 0 18px rgba(178, 102, 255, 0.35); }
+.btn-primary:disabled { opacity: 1; background: linear-gradient(90deg, #4a6bff 0 58%, #2b3a8c 58%); box-shadow: none; color: #fff; }
+input[type="text"], input[type="number"] { background: #0c0a20; }
+.log-row .who { display: inline-block; min-width: 2.9rem; }
+
+/* ---- the scene: canvas + DOM props laid over it, in % of the 480x312 grid ---- */
+
+.scene { position: relative; line-height: 0; }
+.scene > #office { width: 100%; height: 100%; }
+.scene .prop, .scene .zone-chip, .scene .chill-label { position: absolute; line-height: 1.2; }
+
+/* speech bubbles above each workstation */
+.zone-chip {
+  top: 4.2%;
+  transform: translateX(-50%);
+  padding: 0.28rem 0.8rem;
+  font: 500 clamp(0.62rem, 1.35vw, 1.05rem)/1.2 var(--sans);
+  color: #fff;
+  background: rgba(10, 8, 28, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  white-space: nowrap;
+  opacity: 0.78;
+}
+.zone-chip::after { content: ""; position: absolute; left: 50%; bottom: -5px; width: 9px; height: 9px; transform: translateX(-50%) rotate(45deg); background: inherit; border-right: 1px solid rgba(255,255,255,0.14); border-bottom: 1px solid rgba(255,255,255,0.14); }
+.zone-kai { left: 18.5%; }
+.zone-jax { left: 81%; }
+.zone-chip.is-active { opacity: 1; }
+.zone-kai.is-active { border-color: var(--auditor); box-shadow: 0 0 14px rgba(178, 102, 255, 0.5); }
+.zone-jax.is-active { border-color: var(--fixer); box-shadow: 0 0 14px rgba(61, 255, 147, 0.45); }
+.zone-kai.is-active::after { border-color: var(--auditor); }
+.zone-jax.is-active::after { border-color: var(--fixer); }
+
+.chill-label { display: none; }
+
+/* a prop = CSS placeholder shape + optional sprite (static/sprites/*.png) */
+.prop .shape { position: absolute; inset: 0; }
+.prop img.sprite { display: none; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.prop.has-sprite img.sprite { display: block; }
+.prop.has-sprite .shape { display: none; }
+.shape i { position: absolute; display: block; }
+.shape .can { position: static; }
+
+.prop-fridge { left: 27.1%; top: 59.3%; width: 8.7%; height: 26.4%; }
+.prop-pool   { left: 54%;    top: 80%;   width: 15.4%; height: 16.2%; }
+.prop-pizza  { left: 63.6%;  top: 65.4%; width: 4.4%;  height: 5.4%; }
+.prop-ps     { left: 70.8%;  top: 53.4%; width: 27%;   height: 45.6%; }
+
+/* -- glowing glass-door mini fridge, stocked with sodas and energy drinks -- */
+.fridge { background: #cfd8ec; border: 3px solid #6f7aa0; box-shadow: 0 0 26px rgba(90, 220, 255, 0.6); }
+.fridge-door { position: absolute; inset: 5% 15% 5% 6%; display: grid; grid-template-rows: repeat(5, 1fr); gap: 3%; padding: 5% 6%; background: linear-gradient(180deg, #0d3b63, #14537d); box-shadow: inset 0 0 14px rgba(120, 230, 255, 0.85); border: 2px solid #4b5578; }
+.shelf { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10%; padding-top: 14%; min-height: 0; border-bottom: 2px solid rgba(215, 238, 255, 0.55); }
+.can { display: block; align-self: stretch; min-height: 3px; border-radius: 1px; box-shadow: inset -2px 0 rgba(0,0,0,0.28), inset 0 2px rgba(255,255,255,0.45); }
+.shelf:nth-child(1) .k1 { background: #ff4d5e; } .shelf:nth-child(1) .k2 { background: #ff4d5e; } .shelf:nth-child(1) .k3 { background: #e8e8f0; }
+.shelf:nth-child(2) .k1 { background: #ffb02e; } .shelf:nth-child(2) .k2 { background: #ffe14a; } .shelf:nth-child(2) .k3 { background: #ff8a3d; }
+.shelf:nth-child(3) .k1 { background: #4dff7a; } .shelf:nth-child(3) .k2 { background: #2fd6a0; } .shelf:nth-child(3) .k3 { background: #7dff6a; }
+.shelf:nth-child(4) .k1 { background: #3dd6ff; } .shelf:nth-child(4) .k2 { background: #6b7bff; } .shelf:nth-child(4) .k3 { background: #b266ff; }
+.shelf:nth-child(5) .k1 { background: #ff6ad5; } .shelf:nth-child(5) .k2 { background: #ffd23f; } .shelf:nth-child(5) .k3 { background: #3b82f6; }
+.fridge-handle { position: absolute; right: 5%; top: 24%; width: 6%; height: 38%; background: #5d6788; }
+
+/* -- 8-bit green pool table -- */
+.pool { background: #1c9a55; border: 0.5em solid; border-color: #8a5a30 #5a3a1c #5a3a1c #8a5a30; box-shadow: inset 0 0 0 2px #0f6b38, 0 5px 0 #3a2410; border-radius: 2px; }
+.pocket { width: 8%; height: 16%; background: #0b0b14; border-radius: 50%; }
+.pocket.p1 { left: -3%; top: -6%; } .pocket.p2 { left: 46%; top: -9%; } .pocket.p3 { right: -3%; top: -6%; }
+.pocket.p4 { left: -3%; bottom: -6%; } .pocket.p5 { left: 46%; bottom: -9%; } .pocket.p6 { right: -3%; bottom: -6%; }
+.ball { width: 6.5%; height: 12%; border-radius: 50%; box-shadow: inset -1px -1px rgba(0,0,0,0.35); }
+.ball.b-white { left: 30%; top: 44%; background: #f6f6f6; }
+.ball.r1 { left: 66%; top: 44%; background: #ff4d5e; } .ball.r2 { left: 72%; top: 34%; background: #ffd23f; }
+.ball.r3 { left: 72%; top: 54%; background: #3b82f6; } .ball.r4 { left: 78%; top: 24%; background: #b266ff; }
+.ball.r5 { left: 78%; top: 64%; background: #15151f; }
+.cue { height: 4%; width: 34%; background: linear-gradient(90deg, #e8c690, #8a5a30); transform-origin: left center; }
+.cue.c-a { left: 6%; top: 36%; transform: rotate(8deg); } .cue.c-b { left: 6%; top: 60%; transform: rotate(-8deg); }
+
+/* -- pizza box -- */
+.pizza { background: #f4e4c0; border: 2px solid #c7a15a; border-radius: 2px; }
+.pizza .slice { left: 18%; top: 18%; width: 64%; height: 64%; background: radial-gradient(circle at 30% 35%, #e63946 0 9%, transparent 10%), radial-gradient(circle at 65% 40%, #e63946 0 9%, transparent 10%), radial-gradient(circle at 45% 70%, #e63946 0 9%, transparent 10%), #f2b24d; border-radius: 50%; }
+.pizza .s2, .pizza .s3 { display: none; }
+
+/* -- PlayStation corner: TV on a stand, rug, couch, gaming chair -- */
+.tv { position: absolute; left: 14%; top: 0; width: 62%; height: 32%; background: #14141f; border: 3px solid #4a3a2a; border-radius: 3px; box-shadow: 0 0 20px rgba(61, 255, 147, 0.4); }
+.tv-screen { position: absolute; inset: 5%; background: repeating-linear-gradient(90deg, #2fb55c 0 12.5%, #28a653 12.5% 25%); overflow: hidden; }
+.fifa-score { position: absolute; left: 50%; top: 3%; transform: translateX(-50%); padding: 0 0.35em; background: rgba(8, 8, 20, 0.88); color: #fff; font: 700 clamp(0.38rem, 0.7vw, 0.56rem)/1.3 var(--mono); white-space: nowrap; }
+.pitch-line { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.75); }
+.pitch-circle { position: absolute; left: 50%; top: 50%; width: 24%; aspect-ratio: 1; transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.75); border-radius: 50%; }
+.box { top: 28%; width: 14%; height: 44%; border: 2px solid rgba(255,255,255,0.7); } .box.bl { left: 0; } .box.br { right: 0; }
+.player { width: 6%; height: 12%; border-radius: 1px; }
+.player.pa1 { left: 22%; top: 38%; background: #3b82f6; } .player.pa2 { left: 34%; top: 64%; background: #3b82f6; }
+.player.pb1 { left: 62%; top: 30%; background: #ff4d5e; } .player.pb2 { left: 70%; top: 58%; background: #ff4d5e; }
+.football { left: 48%; top: 52%; width: 4.5%; height: 8%; border-radius: 50%; background: #fff; }
+.stand { position: absolute; left: 11%; top: 33%; width: 68%; height: 13%; background: #7a5230; border: 2px solid #4a2f18; box-shadow: 0 3px 0 #3a2410; }
+.stand .console { left: 8%; top: 22%; width: 30%; height: 50%; background: #1b1f3a; border: 1px solid #3b82f6; box-shadow: 0 0 6px rgba(59,130,246,0.7); }
+.stand .pad-a { left: 52%; top: 24%; width: 16%; height: 48%; background: #1a1a2e; border-radius: 4px; border: 1px solid #5a6cff; }
+.rug { position: absolute; left: 22%; top: 52%; width: 66%; height: 30%; background: repeating-conic-gradient(#ff6ad5 0 25%, #3dd6ff 0 50%, #ffd23f 0 75%, #7dff6a 0) 0 0 / 24% 40%; opacity: 0.75; border: 2px solid rgba(255,255,255,0.18); }
+.chair-gaming { position: absolute; left: 0; top: 52%; width: 22%; height: 40%; background: #14162a; border-radius: 40% 40% 20% 20%; border: 2px solid #2c3060; }
+.chair-gaming .seat { left: 18%; right: 18%; top: 22%; bottom: 14%; background: #20244a; border-radius: 30%; }
+.couch { position: absolute; left: 26%; top: 74%; width: 72%; height: 24%; background: #2a2b3a; border-radius: 6px; box-shadow: 0 3px 0 #15161f; }
+.couch .back { left: 8%; right: 8%; top: 0; height: 40%; background: #3a3b4e; border-radius: 4px; }
+.couch .arm { top: 8%; bottom: 0; width: 9%; background: #1f202c; border-radius: 4px; } .couch .arm.l { left: 0; } .couch .arm.r { right: 0; }
+.pad { width: 9%; height: 5%; background: #2b2f5e; border: 1px solid #6a78ff; border-radius: 4px; top: 64%; } .pad.p1 { left: 38%; } .pad.p2 { left: 52%; }
+
+@media (max-width: 720px) { .zone-chip { font-size: 0.5rem; padding: 0.1rem 0.4rem; } }

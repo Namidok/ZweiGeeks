@@ -79,7 +79,7 @@
     file_too_large: "the file is too large and the finding has no line to focus on",
   };
 
-  const WHO = { auditor: "Auditor", fixer: "Fixer", system: "Run" };
+  const WHO = { auditor: "KAI", fixer: "JAX", system: "Run" };
 
   const humanize = (code) => String(code || "unknown").replace(/_/g, " ");
 
@@ -114,9 +114,14 @@
 
   // ---------- agent cards ----------
 
+  const CHIP_ACTIVE = { auditor: "Scanning…", fixer: "Fixing…" };
+
   function setAgent(who, text, active) {
     $(`status-${who}`).textContent = text;
     $(`card-${who}`).classList.toggle("is-active", Boolean(active));
+    const chip = $(`chip-${who}`);
+    chip.textContent = active ? CHIP_ACTIVE[who] : (/^Done|Idle/.test(text) ? "Idle" : "Waiting…");
+    chip.classList.toggle("is-active", Boolean(active));
   }
 
   function setStat(who, text) {
@@ -316,7 +321,7 @@
     },
 
     loop_continue({ blocking_count }) {
-      handoffRow("fixer", `Handed ${plural(blocking_count, "blocking finding")} to the Fixer`);
+      handoffRow("fixer", `Handed ${plural(blocking_count, "blocking finding")} to JAX`);
       setAgent("auditor", "Waiting for fixes", false);
       setAgent("fixer", "Picking up findings", true);
     },
@@ -366,7 +371,7 @@
       settleFixRows();
       handoffRow(
         "auditor",
-        changed ? `Fix pass ${iteration} done, ${plural(changed, "fix", "fixes")}. Back to the Auditor` : `Fix pass ${iteration} changed nothing`,
+        changed ? `Fix pass ${iteration} done, ${plural(changed, "fix", "fixes")}. Back to KAI` : `Fix pass ${iteration} changed nothing`,
       );
       setAgent("fixer", "Waiting for findings", false);
     },
@@ -377,8 +382,8 @@
         clean: ["No blocking findings left", "ok"],
         budget_exhausted: [`Out of passes with ${plural(remaining ?? 0, "blocking finding")} open`, "warn"],
         no_progress: ["Stopped: that pass couldn't fix anything, so another audit wouldn't change anything", "warn"],
-        needs_manual_fix: [`${plural(remaining ?? 0, "finding")} need a manual fix: the Fixer ran out of attempts`, "warn"],
-        fixer_ollama_timeouts: ["Stopped: the Fixer's model calls kept timing out", "error"],
+        needs_manual_fix: [`${plural(remaining ?? 0, "finding")} need a manual fix: JAX ran out of attempts`, "warn"],
+        fixer_ollama_timeouts: ["Stopped: JAX's model calls kept timing out", "error"],
       };
       let entry = messages[reason];
       if (!entry && String(reason).startsWith("incomplete_")) {
@@ -638,7 +643,7 @@
       return {
         state: blocking ? "warn" : "ok",
         title: `Audit finished with ${plural(findings.length, "finding")}`,
-        detail: `${blocking} of them are high severity and would go to the Fixer. Nothing in the repository was changed.`,
+        detail: `${blocking} of them are high severity and would go to JAX. Nothing in the repository was changed.`,
       };
     }
     if (reason === "no_blocking_findings") {
@@ -663,14 +668,14 @@
         state: applied ? "ok" : "warn",
         title: applied
           ? `${plural(applied, "fix", "fixes")} applied, ${plural(manual, "finding")} left for you`
-          : "The Fixer couldn't fix these findings",
+          : "JAX couldn't fix these findings",
         detail: `${fixesLine}Findings marked "Needs manual fix" used up their attempts; each one's notes say why the last edit was rejected.`,
       };
     }
     if (reason === "fixer_ollama_timeouts") {
       return {
         state: "error",
-        title: "Stopped: the Fixer's model calls kept timing out",
+        title: "Stopped: JAX's model calls kept timing out",
         detail: `${fixesLine}Check ollama ps for a stuck model, then run again.`,
       };
     }
@@ -809,7 +814,7 @@
     const body = el("div", "finding-body");
     body.append(el("h4", null, "What's wrong"), el("p", null, f.detail || "No detail given."));
     if (f.resolution) body.append(el("h4", null, "Suggested resolution"), el("p", null, f.resolution));
-    if (f.fix_notes) body.append(el("h4", null, "Fixer notes"), el("p", null, f.fix_notes));
+    if (f.fix_notes) body.append(el("h4", null, "JAX's notes"), el("p", null, f.fix_notes));
     body.append(el("p", "meta", `Found by ${f.source_tool} in the ${f.category} check, severity ${f.severity}.`));
     details.append(body);
     return details;
@@ -832,7 +837,7 @@
     if (!attempts.length) {
       list.append(el("li", "empty", mode === "audit"
         ? "Audit-only runs don't attempt fixes."
-        : "The Fixer had nothing to attempt."));
+        : "JAX had nothing to attempt."));
       return;
     }
     for (const a of attempts) {
@@ -857,7 +862,7 @@
     if (!lines.length) {
       view.append(el("p", "empty", mode === "audit"
         ? "Audit-only runs don't change any files."
-        : "The Fixer didn't change any files."));
+        : "JAX didn't change any files."));
       return;
     }
     const pre = el("pre", "diff");
@@ -936,6 +941,13 @@
   if (office) {
     office.mount($("office"));
     for (const c of document.querySelectorAll("canvas.portrait")) office.portrait(c, c.dataset.who);
+  }
+  // Drop PNGs into static/sprites/ and they replace the CSS placeholder props.
+  for (const img of document.querySelectorAll("img[data-sprite]")) {
+    const show = () => img.closest(".prop").classList.add("has-sprite");
+    if (img.complete && img.naturalWidth) show();
+    img.addEventListener("load", show);
+    img.addEventListener("error", () => img.remove());
   }
   const savedPath = storage.get(LAST_PATH);
   if (savedPath) ui.repoPath.value = savedPath;

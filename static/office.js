@@ -1,4 +1,4 @@
-// Pixel-art office for the Auditor and the Fixer, drawn with plain canvas
+// Pixel-art office for KAI (the Auditor) and JAX (the Fixer), drawn with plain canvas
 // calls. No game engine and no sprite files: every sprite is a string grid
 // below, so the page stays offline and dependency-free.
 //
@@ -8,17 +8,17 @@
 
 (() => {
   const W = 480;
-  const H = 288;
-  const CORRIDOR_Y = 190;
-  const WALK_SPEED = 75; // logical px per second
+  const H = 312;
+  const CORRIDOR_Y = 176;
+  const WALK_SPEED = 85; // logical px per second
   const BUBBLE_MS = 12000;
 
   const C = {
-    bg: "#1a1a2e",
-    floorA: "#2a2a3c",
-    floorB: "#2e2e42",
-    wall: "#20203a",
-    wallTrim: "#3a3a60",
+    bg: "#110f2b",
+    floorA: "#25214a",
+    floorB: "#2b2756",
+    wall: "#1b1840",
+    wallTrim: "#3f3a85",
     wood: "#6d4c2e",
     woodLight: "#8a6440",
     woodDark: "#4b331f",
@@ -28,10 +28,10 @@
     chair: "#44446a",
     paper: "#eef0f4",
     paperEdge: "#aab4be",
-    auditor: "#8c7cf6",
-    auditorDark: "#2b2463",
-    fixer: "#2ec4a0",
-    fixerDark: "#0f3d33",
+    auditor: "#b266ff",
+    auditorDark: "#2e1760",
+    fixer: "#3dff93",
+    fixerDark: "#0d4a2a",
     led: "#55efc4",
     ledBusy: "#fdcb6e",
     ledOff: "#33404a",
@@ -40,14 +40,14 @@
   };
 
   const SPOTS = {
-    auditorSeat: { x: 90, y: 128, face: "up" },
-    auditorIdle: { x: 152, y: 166, face: "down" },
-    fixerSeat: { x: 390, y: 128, face: "up" },
-    fixerIdle: { x: 328, y: 166, face: "down" },
-    tableLeft: { x: 198, y: 160, face: "down" },
-    tableRight: { x: 282, y: 160, face: "down" },
-    rack: { x: 240, y: 278, face: "up" },
-    printer: { x: 50, y: 276, face: "up" },
+    auditorSeat: { x: 90, y: 126, face: "up" },
+    auditorIdle: { x: 152, y: 156, face: "down" },
+    fixerSeat: { x: 390, y: 126, face: "up" },
+    fixerIdle: { x: 328, y: 156, face: "down" },
+    tableLeft: { x: 198, y: 142, face: "down" },
+    tableRight: { x: 282, y: 142, face: "down" },
+    rack: { x: 238, y: 184, face: "down" },
+    printer: { x: 50, y: 202, face: "down" },
   };
 
   // ---------- sprites: 10 x 14 grids, one char per pixel ----------
@@ -72,7 +72,7 @@
     auditor: { H: "#3b2a20", S: "#f1c27d", E: "#15151f", G: "#d6dee8", T: "#7c6cf0", t: "#5847c9", W: "#2f2f46", P: "#2f2f46", B: "#15151f" },
     fixer: { H: "#2d1f17", Y: "#fdcb6e", S: "#d9a066", E: "#15151f", T: "#25b591", t: "#178a6d", W: "#8b5a2b", P: "#3a4a5a", B: "#15151f" },
   };
-  const PX = 2; // logical px per sprite pixel
+  const PX = 3; // logical px per sprite pixel
   const SPRITE_W = 10;
   const SPRITE_H = 14;
 
@@ -280,6 +280,13 @@
     rect(x + 7, y + 21, 12, 2, C.metal);
   }
 
+  // Three screens side by side, the middle one a little taller.
+  function monitors3(x, y, on, glow, dark, now) {
+    monitor(x, y + 3, on, glow, dark, now);
+    monitor(x + 26, y, on, glow, dark, now);
+    monitor(x + 52, y + 3, on, glow, dark, now);
+  }
+
   function keyboard(x, y) {
     rect(x, y, 20, 5, "#4a4a6a");
     for (let i = 0; i < 4; i++) rect(x + 2 + i * 4, y + 1, 2, 1, "#6c6c90");
@@ -365,14 +372,17 @@
     rect(x + 4, y, 4, 4, "#27ae60");
   }
 
-  function zone(x, y, w, h, color, label) {
-    ctx.globalAlpha = 0.85;
+  function zone(x, y, w, h, color, name, role) {
+    ctx.globalAlpha = 0.9;
     outline(x, y, w, h, color);
     outline(x + 1, y + 1, w - 2, h - 2, color);
-    ctx.globalAlpha = 0.08;
+    ctx.globalAlpha = 0.09;
     rect(x + 2, y + 2, w - 4, h - 4, color);
     ctx.globalAlpha = 1;
-    text(label, x + 6, y + h - 11, color, 7, "left", "bold");
+    text(name, x + 8, y + h - 27, color, 13, "left", "bold");
+    ctx.globalAlpha = 0.85;
+    text(role, x + 8, y + h - 12, color, 7);
+    ctx.globalAlpha = 1;
   }
 
   function drawRoom(now) {
@@ -388,28 +398,29 @@
     windowPane(392, 8, 64, 24);
     whiteboard(176, 5, 128, 30);
 
-    zone(8, 50, 200, 134, C.auditor, "Auditor");
-    zone(272, 50, 200, 134, C.fixer, "Fixer");
+    zone(8, 46, 200, 122, C.auditor, "KAI", "The Auditor");
+    zone(272, 46, 200, 122, C.fixer, "JAX", "The Fixer");
 
-    cabinet(166, 58);
+    cabinet(166, 62);
     desk(48, 76, 84);
-    monitor(77, 56, scene.monitors.auditor, C.auditor, C.auditorDark, now);
+    monitors3(54, 52, scene.monitors.auditor, C.auditor, C.auditorDark, now);
     keyboard(80, 85);
     chair(80, 108);
 
-    toolbox(284, 78);
+    toolbox(284, 86);
     desk(348, 76, 84);
-    monitor(377, 56, scene.monitors.fixer, C.fixer, C.fixerDark, now);
+    monitors3(354, 52, scene.monitors.fixer, C.fixer, C.fixerDark, now);
     keyboard(380, 85);
     chair(380, 108);
 
-    table(210, 120, 60);
-    papers(scene.table, 233, 126);
+    table(210, 104, 60);
+    papers(scene.table, 233, 110);
 
-    rack(224, 204, now);
-    printer(30, 226, now);
-    plant(452, 252);
-    plant(184, 252);
+    printer(30, 204, now);
+    rack(224, 186, now);
+    plant(178, 222);
+    plant(338, 206);
+    plant(448, 214);
   }
 
   function drawAgent(a, now) {
@@ -421,7 +432,7 @@
     const colors = COLORS[a.who];
 
     ctx.globalAlpha = 0.35;
-    rect(left + 3, Math.round(a.y) - 2, 14, 3, "#000");
+    rect(left + 4, Math.round(a.y) - 2, 22, 4, "#000");
     ctx.globalAlpha = 1;
 
     grid(legs, colors, left, top + 11 * PX, PX);
@@ -429,8 +440,8 @@
     grid(HEADS[a.who][a.face], colors, left, top + bob, PX);
 
     if (a.carrying > 0 && a.face === "down") {
-      rect(left + 5, top + 15, 10, 7, C.paper);
-      outline(left + 5, top + 15, 10, 7, C.paperEdge);
+      rect(left + 8, top + 22, 14, 10, C.paper);
+      outline(left + 8, top + 22, 14, 10, C.paperEdge);
     }
   }
 
@@ -482,12 +493,16 @@
   // largest whole multiple.
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const box = view.parentElement.getBoundingClientRect();
+    const frame = view.closest(".office-frame") || view.parentElement;
+    const box = frame.getBoundingClientRect();
     const s = Math.max(0.25, Math.min((box.width * dpr) / W, (box.height * dpr) / H));
     view.width = Math.round(W * s);
     view.height = Math.round(H * s);
-    view.style.width = `${view.width / dpr}px`;
-    view.style.height = `${view.height / dpr}px`;
+    // The scene wrapper takes the same size, so the DOM props laid over the
+    // canvas (positioned in percentages) stay glued to the drawing.
+    const scene = view.parentElement;
+    scene.style.width = `${view.width / dpr}px`;
+    scene.style.height = `${view.height / dpr}px`;
     renderScale = Math.max(1, Math.ceil(s - 0.01));
     buffer.width = W * renderScale;
     buffer.height = H * renderScale;
@@ -712,7 +727,7 @@
     buffer = document.createElement("canvas");
     ctx = buffer.getContext("2d");
     resize();
-    new ResizeObserver(resize).observe(view.parentElement);
+    new ResizeObserver(resize).observe(view.closest(".office-frame") || view.parentElement);
     requestAnimationFrame((t) => { last = t; frame(t); });
   }
 
