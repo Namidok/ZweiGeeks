@@ -1,7 +1,8 @@
 """All git operations. ZweiGeeks never creates a branch, never stages,
 commits, stashes or switches branches in the user's repo, and never pushes.
 
-A run works in a *detached git worktree*: a second checkout of the user's
+By default fixes are edited straight into the working tree. With
+ZWEIGEEKS_ISOLATE=1 a run works in a *detached git worktree* instead: a second checkout of the user's
 HEAD in a temp directory. Auditing and fixing happen there, so the user's
 working tree, index and branch aren't touched while it runs and they can keep
 working. When the run ends, the fixes are applied to the user's working tree
@@ -98,6 +99,19 @@ def prune_stale_worktrees(repo: Repo) -> list[str]:
     except GitCommandError:
         pass
     return removed
+
+
+def changed_files(repo_path: str) -> list[str]:
+    """Tracked files that differ from HEAD (staged or not)."""
+    return worktree_changed_files(repo_path)
+
+
+def diff_of(repo_path: str, files: list[str]) -> str:
+    """The uncommitted diff of exactly these files, as text."""
+    if not files:
+        return ""
+    out = _run(["git", "diff", "HEAD", "--no-ext-diff", "--no-color", "--no-renames", "--", *files], repo_path).stdout
+    return out.decode("utf-8", "replace")
 
 
 # --- getting the fixes into the user's working tree --------------------------------------

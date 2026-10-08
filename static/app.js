@@ -604,7 +604,7 @@
       audit
         ? document.createTextNode("Read-only: you get findings and a PDF report. Nothing in the repository is changed.")
         : document.createTextNode(
-          "Fixes are made in a private copy of your latest commit, then applied to your working tree as uncommitted changes. Nothing is committed, staged or pushed.",
+          "Fixes are edited straight into your files and left uncommitted, so Source Control shows them. Files you've already changed are left alone. Nothing is committed, staged or pushed.",
         ),
     );
   }

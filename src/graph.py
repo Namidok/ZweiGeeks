@@ -46,6 +46,11 @@ class AgentState(TypedDict):
     # "file_hash"}. The memory between passes that stops the Fixer from
     # sending the model the same request over and over.
     history: dict[str, dict]
+    # Files the user has uncommitted changes in: never edited, so everything
+    # in `git diff` afterwards is the Fixer's.
+    protected: frozenset
+    # Protected files that had something to fix (for the run summary).
+    left_alone: list[str]
     # The first audit's suggestions; re-audits don't regenerate them.
     improvements: list[str]
 
@@ -98,7 +103,14 @@ def _plan(state: "AgentState") -> list[Finding]:
     the file itself and the file hasn't changed since.
     """
     todo = []
+    protected = state.get("protected") or frozenset()
     for finding in state["report"].fixable_findings(config.FIXER_MIN_SEVERITY):
+        if finding.file in protected:
+            finding.needs_manual_fix = True
+            finding.fix_notes = "You have uncommitted changes in this file, so ZweiGeeks left it alone."
+            if finding.file not in state.setdefault("left_alone", []):
+                state["left_alone"].append(finding.file)
+            continue
         past = state["history"].get(_key(finding))
         if past:
             if past["attempts"] >= config.FIXER_MAX_ATTEMPTS_PER_FINDING:
@@ -130,7 +142,7 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
         state["report"] = report
         state["iteration"] += 1
         todo = _plan(state)
-        mechanical = deterministic.pending(report)
+        mechanical = deterministic.pending(report, state.get("protected") or frozenset())
         if runlog:
             runlog.audit(state["iteration"], report)
 
@@ -173,7 +185,9 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
         edited: set[str] = set()
         applied = 0
         # Deterministic fixes first: no model, no gates to fail.
-        for finding, attempt in deterministic.run(state["repo_path"], state["report"], on_event):
+        for finding, attempt in deterministic.run(
+            state["repo_path"], state["report"], on_event, state.get("protected") or frozenset(),
+        ):
             state["fix_attempts"].append(attempt)
             if runlog:
                 runlog.fix_attempt(state["iteration"], finding, attempt)
@@ -313,6 +327,8 @@ def run_pipeline(
     Ctrl+C.
     """
     repo = git_utils.open_repo(repo_path)
+    if not config.ISOLATE_RUNS:
+        return _run_in_place(repo, repo_path, max_iterations, on_event)
     git_utils.prune_stale_worktrees(repo)
     worktree = git_utils.create_worktree(repo)
     _emit(on_event, "worktree_created", {})
@@ -329,6 +345,7 @@ def run_pipeline(
         "consecutive_fix_timeouts": 0,
         "history": {},
         "improvements": [],
+        "protected": frozenset(),
     }
 
     graph = build_graph(on_event=on_event, runlog=runlog)
@@ -379,5 +396,69 @@ def run_pipeline(
     final_state["applied_files"] = landed["applied"]
     final_state["skipped_files"] = landed["skipped"]
     final_state["skipped_patch"] = landed["skipped_patch"]
+    final_state["summary"] = _finish_summary(runlog, final_state["report"], final_state["stop_reason"], on_event)
+    return final_state
+
+
+def _run_in_place(repo, repo_path: str, max_iterations: int, on_event: EventCallback) -> AgentState:
+    """Edits the repo's working tree directly, like any editor would, and
+    leaves everything uncommitted: no branch, no staging, no commit. Files
+    with the user's own uncommitted changes are never edited, so `git diff`
+    afterwards shows only what ZweiGeeks changed - review it in Source
+    Control, keep it by committing, undo it with `git checkout -- <file>`."""
+    protected = frozenset(git_utils.user_modified_files(repo_path))
+    runlog = RunLog(repo_path, "fix")
+    initial_state: AgentState = {
+        "repo_path": repo_path,
+        "iteration": 0,
+        "max_iterations": max_iterations,
+        "report": AuditReport(),
+        "fix_attempts": [],
+        "done": False,
+        "stop_reason": None,
+        "consecutive_fix_timeouts": 0,
+        "history": {},
+        "improvements": [],
+        "protected": protected,
+        "left_alone": [],
+    }
+    graph = build_graph(on_event=on_event, runlog=runlog)
+    final_state = None
+    try:
+        with call_listener(runlog.on_llm_call):
+            final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
+    finally:
+        # Also on errors and Ctrl+C: whatever was fixed so far stays in the files.
+        changed = sorted(set(git_utils.changed_files(repo_path)) - protected)
+        skipped = []
+        if final_state:
+            skipped = [
+                {"file": f, "reason": "you have uncommitted changes in this file"}
+                for f in sorted(final_state.get("left_alone") or [])
+            ]
+        diff = git_utils.diff_of(repo_path, changed)
+        patch = None
+        if changed:
+            runlog.dir.mkdir(parents=True, exist_ok=True)
+            patch = str(runlog.dir / "fixes.patch")
+            Path(patch).write_text(diff)
+            _emit(on_event, "fixes_applied", {"files": changed, "skipped": skipped, "skipped_patch": None})
+
+    pdf_path = None
+    try:
+        pdf_path = generate_pdf_report(final_state["report"], repo_path)
+        _emit(on_event, "pdf_report", {"path": pdf_path})
+    except Exception as exc:  # noqa: BLE001 - a report failure shouldn't hide the audit results
+        _emit(on_event, "pdf_report_failed", {"error": str(exc)})
+
+    runlog.note(files_applied=changed, files_skipped=skipped, skipped_patch=None, fixes_patch=patch)
+    _emit(on_event, "pipeline_done", {
+        "stop_reason": final_state["stop_reason"], "diff_lines": len(diff.splitlines()), "pdf_path": pdf_path,
+    })
+    final_state["diff"] = diff
+    final_state["pdf_path"] = pdf_path
+    final_state["applied_files"] = changed
+    final_state["skipped_files"] = skipped
+    final_state["skipped_patch"] = None
     final_state["summary"] = _finish_summary(runlog, final_state["report"], final_state["stop_reason"], on_event)
     return final_state

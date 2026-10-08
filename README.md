@@ -136,26 +136,25 @@ The loop remembers what it tried, per fingerprint:
 
 ### Human in the loop
 
-A run never touches your branch, index or working tree while it works. It
-runs `git worktree add --detach <tmpdir> HEAD` and audits and fixes in that
-private checkout, so you can keep working. No branch is created, and nothing
-is staged, committed, stashed or pushed in your repo.
+Fixes are edited **straight into your working tree**, the way any editor
+would, and left uncommitted. ZweiGeeks never creates a branch, stages,
+commits, stashes or pushes. Open VS Code's Source Control view: every file it
+changed is under **Changes** with a side-by-side diff. Keep what you like by
+committing it; discard the rest from the same view.
 
-When the run ends, the diff is applied to your working tree with `git apply`,
-as plain unstaged edits - VS Code shows the files under **Changes**. It's
-done per file: a file you've changed yourself (staged or not), or whose patch
-no longer applies cleanly, is **skipped** rather than overwritten; it's listed
-in the run summary and the UI, and its patch is saved to
-`audit_results/<run>/skipped.patch`. The whole diff is always saved to
-`fixes.patch` first. The worktree is removed in a `finally` (Ctrl+C and
-errors included - the fixes made so far still land), and worktrees left by
-crashed runs are pruned on the next start.
+One rule keeps that list trustworthy: a file you've **already changed
+yourself** (staged or not) is never edited - its findings are marked "needs
+manual fix" and listed as skipped - so everything in `git diff` afterwards is
+ZweiGeeks'. The whole diff is also saved to `audit_results/<run>/fixes.patch`.
+If a run is interrupted, whatever was fixed so far stays in your files.
 
-Review with `git diff`; keep what you like by committing it, drop the rest
-with `git checkout -- <file>`.
-
-The audit sees your last *commit* (HEAD), not uncommitted edits, and not
-untracked or gitignored files (a `.env`, say, isn't in the private copy).
+Prefer not to have your files edited during a run? Set `ZWEIGEEKS_ISOLATE=1`:
+the run then audits and fixes in a private detached git worktree of HEAD,
+and applies the result to your working tree at the end with `git apply`, file
+by file, skipping files you've changed or that no longer match (patch in
+`skipped.patch`). The worktree is removed even on errors and Ctrl+C, and
+leftovers from crashed runs are pruned on the next start. In that mode the
+audit sees your last commit, not uncommitted edits.
 
 ### Reliability: a local LLM that hangs
 
@@ -207,6 +206,7 @@ Defaults:
 | `FIXER_MAX_ATTEMPTS_PER_FINDING` | `3` | Attempts before a finding is marked needs manual fix |
 | `FIXER_IMPORT_CHECK` | `1` | Import the edited Python module after a fix; `0` to skip |
 | `REVIEW_CACHE` | `1` | Cache per-file LLM reviews by content; `0` to always ask the model |
+| `ZWEIGEEKS_ISOLATE` | `0` | `1` = work in a private git worktree and apply the result at the end |
 | `REVIEW_CACHE_DIR` | `<REPORTS_DIR>/.review_cache` | Where cached reviews live |
 | `OLLAMA_NUM_CTX` | `8192` | Context window requested from Ollama |
 | `AUDIT_MAX_FILES` | `30` | Files the LLM reviews per audit pass |
@@ -365,9 +365,9 @@ suite with coverage on every push and pull request.
 - **No way to cancel a run from the UI.** Stopping the server mid-run kills
   the job before it can clean up; the leftover private worktree is pruned the
   next time a run starts in that repo (or with `git worktree prune`).
-- **The audit sees HEAD.** Uncommitted edits, untracked files and gitignored
-  files (virtualenvs, `.env`) aren't in the private copy. The project's own
-  virtualenv is still used to run its tests and to import-check edits.
+- **Editing in place means the run edits files while you may be editing.** A
+  file you've already changed is skipped, but one you start editing mid-run
+  isn't protected; review `git diff` carefully, or use `ZWEIGEEKS_ISOLATE=1`.
 - **The UI has no automated tests.** The API it calls is covered by
   `tests/test_server.py`; the page itself was checked by hand in Chrome.
 - **Language coverage is uneven.** Python repos get the full static tool

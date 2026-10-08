@@ -52,15 +52,18 @@ def find_pin(requirements: str, package: str) -> Optional[tuple[int, str]]:
     return None
 
 
-def pending(report: AuditReport) -> list[Finding]:
-    """Open findings a deterministic fixer can handle."""
-    return [f for f in report.open_findings() if f.autofix]
+def pending(report: AuditReport, protected: frozenset = frozenset()) -> list[Finding]:
+    """Open findings a deterministic fixer can handle, leaving out files the
+    user has uncommitted changes in."""
+    return [f for f in report.open_findings() if f.autofix and f.file not in protected]
 
 
-def run(repo_path: str, report: AuditReport, on_event: EventCallback = None) -> list[tuple[Finding, FixAttempt]]:
+def run(
+    repo_path: str, report: AuditReport, on_event: EventCallback = None, protected: frozenset = frozenset(),
+) -> list[tuple[Finding, FixAttempt]]:
     """Applies every deterministic fix it can. Returns (finding, attempt)
     pairs - applied or not - for the run log and the fix-attempt list."""
-    todo = pending(report)
+    todo = pending(report, protected)
     results = _bump_pins(repo_path, [f for f in todo if f.autofix.get("tool") == "pin"], on_event)
     results += _ruff_fix(repo_path, [f for f in todo if f.autofix.get("tool") == "ruff"], on_event)
     for finding, attempt in results:

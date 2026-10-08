@@ -20,6 +20,13 @@ from src.schemas import AuditReport, Category, Finding, FixAttempt, Severity
 from src.tools import project
 
 
+@pytest.fixture(autouse=True)
+def isolated(monkeypatch):
+    """These tests cover the optional isolated mode (ZWEIGEEKS_ISOLATE=1)."""
+    from src import config
+    monkeypatch.setattr(config, "ISOLATE_RUNS", True)
+
+
 def out(repo, *args) -> str:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout
 

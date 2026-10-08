@@ -106,3 +106,8 @@ FIXER_MAX_ATTEMPTS_PER_FINDING = int(os.environ.get("FIXER_MAX_ATTEMPTS_PER_FIND
 REVIEW_CACHE = os.environ.get("REVIEW_CACHE", "1") != "0"
 REVIEW_CACHE_DIR = os.environ.get("REVIEW_CACHE_DIR")
 
+# By default fixes are edited straight into the repo's working tree (left
+# uncommitted, so Source Control shows them). Set ZWEIGEEKS_ISOLATE=1 to work
+# in a private detached git worktree instead and apply the result at the end.
+ISOLATE_RUNS = os.environ.get("ZWEIGEEKS_ISOLATE", "0") == "1"
+
