@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/Namidok/ZweiGeeks/actions/workflows/ci.yml/badge.svg)](https://github.com/Namidok/ZweiGeeks/actions/workflows/ci.yml)
 
-Two agents, one loop. The **Auditor** finds what's broken in a repository
-(security, code quality, API and UI hygiene, failing tests); the **Fixer**
-proposes targeted edits for the blocking findings; the Auditor re-checks the
-result. The loop runs in a private copy of your repo until nothing the
-Fixer can act on is left, it stops making progress, the iteration budget
+Two agents, one loop. **KAI**, the Auditor, finds what's broken in a
+repository (security, code quality, API and UI hygiene, failing tests);
+**JAX**, the Fixer, makes targeted edits for the findings, most severe
+first; KAI re-checks the result. The loop runs until nothing JAX can act on
+is left, it stops making progress, the iteration budget
 runs out, or the local LLM stops responding. The fixes then land in your
 working tree as ordinary **uncommitted changes**, so you review them in your
 editor's Source Control view before committing anything.
@@ -82,9 +82,11 @@ Run first in every fix pass, with no model involved:
 
 - **ruff**: `ruff check --fix` on the files that have ruff findings, applying
   only the fixes ruff itself marks safe, with the project's own ruff config.
-- **Vulnerable dependency pins**: `package==old` in `requirements.txt` is
-  rewritten to the lowest version that fixes every pip-audit advisory for
-  that package. Nothing is installed; the next audit re-checks the pin.
+- **Vulnerable dependencies**: in `requirements.txt`, `package==old` (or the
+  minimum in `package>=old` / `~=old`) is raised to the lowest version that
+  fixes every pip-audit advisory for that package; a vulnerable
+  sub-dependency that isn't listed gets a `package>=fixed` line added.
+  Nothing is installed; the next audit re-checks it.
 
 They're counted separately in the run summary.
 
@@ -142,11 +144,12 @@ commits, stashes or pushes. Open VS Code's Source Control view: every file it
 changed is under **Changes** with a side-by-side diff. Keep what you like by
 committing it; discard the rest from the same view.
 
-One rule keeps that list trustworthy: a file you've **already changed
-yourself** (staged or not) is never edited - its findings are marked "needs
-manual fix" and listed as skipped - so everything in `git diff` afterwards is
-ZweiGeeks'. The whole diff is also saved to `audit_results/<run>/fixes.patch`.
-If a run is interrupted, whatever was fixed so far stays in your files.
+Files you've already changed yourself are edited too, on top of your
+changes, like any editor would. The run summary and
+`audit_results/<run>/fixes.patch` list only ZweiGeeks' own edits (for those
+files, the diff is against your version, not against HEAD). Set
+`ZWEIGEEKS_PROTECT_DIRTY=1` to have such files skipped instead. If a run is
+interrupted, whatever was fixed so far stays in your files.
 
 Prefer not to have your files edited during a run? Set `ZWEIGEEKS_ISOLATE=1`:
 the run then audits and fixes in a private detached git worktree of HEAD,
@@ -201,12 +204,13 @@ Defaults:
 | `FIXER_MODEL` | `qwen2.5-coder:7b` | Edit generation |
 | `VERIFIER_MODEL` | same as `AUDITOR_MODEL` | Approves or rejects each proposed fix |
 | `MAX_ITERATIONS` | `5` | Default fix passes per job |
-| `FIXER_MIN_SEVERITY` | `medium` | Lowest severity sent to the LLM Fixer (`critical`, `high`, `medium`, `low`, `info`) |
-| `FIXER_MAX_FIXES_PER_PASS` | `8` | Findings the LLM Fixer attempts per pass, most severe first |
+| `FIXER_MIN_SEVERITY` | `low` | Lowest severity sent to the LLM Fixer (`critical`, `high`, `medium`, `low`, `info`) |
+| `FIXER_MAX_FIXES_PER_PASS` | `15` | Findings the LLM Fixer attempts per pass, most severe first |
 | `FIXER_MAX_ATTEMPTS_PER_FINDING` | `3` | Attempts before a finding is marked needs manual fix |
 | `FIXER_IMPORT_CHECK` | `1` | Import the edited Python module after a fix; `0` to skip |
 | `REVIEW_CACHE` | `1` | Cache per-file LLM reviews by content; `0` to always ask the model |
 | `ZWEIGEEKS_ISOLATE` | `0` | `1` = work in a private git worktree and apply the result at the end |
+| `ZWEIGEEKS_PROTECT_DIRTY` | `0` | `1` = never edit files you have uncommitted changes in |
 | `REVIEW_CACHE_DIR` | `<REPORTS_DIR>/.review_cache` | Where cached reviews live |
 | `OLLAMA_NUM_CTX` | `8192` | Context window requested from Ollama |
 | `AUDIT_MAX_FILES` | `30` | Files the LLM reviews per audit pass |
@@ -260,9 +264,9 @@ and files skipped. When fixes don't land, read the rejections table first.
 (Auto-reload is off, because restarting the server kills a run in progress;
 set `ZWEIGEEKS_RELOAD=1` when working on ZweiGeeks itself.)
 Enter a repo path, pick **Audit and fix** or **Audit only**, and start the
-run. The two agents act it out in a small pixel-art office: the Auditor
-works at its desk and carries blocking findings to the hand-off table, the
-Fixer picks them up and works through them at its bench, the rack blinks
+run. The two agents act it out in a small pixel-art office: KAI works at
+its desk and carries findings to the hand-off table, JAX picks them up and
+works through them at its bench, the rack blinks
 after each fix pass, and the PDF comes out of the printer. Next to the office, an activity
 log shows every step as text. When the run ends, a report opens with the
 findings by severity, every fix attempt and why it was or wasn't applied,
@@ -365,9 +369,9 @@ suite with coverage on every push and pull request.
 - **No way to cancel a run from the UI.** Stopping the server mid-run kills
   the job before it can clean up; the leftover private worktree is pruned the
   next time a run starts in that repo (or with `git worktree prune`).
-- **Editing in place means the run edits files while you may be editing.** A
-  file you've already changed is skipped, but one you start editing mid-run
-  isn't protected; review `git diff` carefully, or use `ZWEIGEEKS_ISOLATE=1`.
+- **Editing in place means the run edits files while you may be editing.**
+  Commit or stash your own work first for the cleanest review, or use
+  `ZWEIGEEKS_ISOLATE=1`.
 - **The UI has no automated tests.** The API it calls is covered by
   `tests/test_server.py`; the page itself was checked by hand in Chrome.
 - **Language coverage is uneven.** Python repos get the full static tool
