@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src import server
-from src.schemas import AuditReport, Category, Finding, FixAttempt, Severity
+from src.schemas import AuditReport, Category, Finding, FixAttempt, Review, ReviewItem, Severity
 from tests.conftest import git
 
 
@@ -93,7 +93,14 @@ def test_rejects_non_git_directory(client, tmp_path):
 def test_audit_only_job_never_runs_the_pipeline(client, monkeypatch, repo, pdf):
     def fake_audit(repo_path, on_event=None):
         on_event("audit_only_done", {"finding_count": 1, "blocking": 1})
-        return {"report": AuditReport(findings=[_finding()], improvements=["add CI"]), "pdf_path": pdf}
+        review = Review(
+            verdict="needs_work", headline="Needs work.", strengths=["Has tests."],
+            improvements=[ReviewItem(title="Add a LICENSE", status="suggested")],
+        )
+        return {
+            "report": AuditReport(findings=[_finding()], improvements=["add CI"]),
+            "review": review, "pdf_path": pdf,
+        }
 
     def no_pipeline(*args, **kwargs):
         raise AssertionError("audit-only mode must not start the fix loop")
@@ -112,11 +119,17 @@ def test_audit_only_job_never_runs_the_pipeline(client, monkeypatch, repo, pdf):
     assert result["fix_attempts"] == [] and result["diff"] == ""
     assert result["improvements"] == ["add CI"]
     assert result["has_pdf"] is True
+    assert result["review"]["verdict"] == "needs_work"
+    assert result["review"]["improvements"][0]["title"] == "Add a LICENSE"
 
     report = client.get(f"/api/jobs/{job_id}/report")
     assert report.status_code == 200
     assert report.headers["content-type"] == "application/pdf"
     assert report.content.startswith(b"%PDF")
+    # Inline, so the report dialog can show it in a frame; ?download=1 saves it.
+    assert report.headers["content-disposition"].startswith("inline")
+    download = client.get(f"/api/jobs/{job_id}/report?download=1")
+    assert download.headers["content-disposition"].startswith("attachment")
 
 
 def test_audit_only_incomplete_review_is_not_reported_as_done_clean(client, monkeypatch, repo):

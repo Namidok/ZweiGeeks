@@ -89,6 +89,7 @@ def _run_job(job: Job) -> None:
             fix_attempts = [a.model_dump() for a in final_state["fix_attempts"]]
             diff = final_state.get("diff", "")
         job.pdf_path = final_state.get("pdf_path")
+        review = final_state.get("review")
         job.status = "done"
         job.result = {
             "mode": job.mode,
@@ -99,6 +100,7 @@ def _run_job(job: Job) -> None:
             "skipped_patch": skipped_patch,
             "findings": [f.model_dump() for f in report.findings],
             "improvements": report.improvements,
+            "review": review.model_dump() if review is not None else None,
             "audit_incomplete": report.audit_incomplete,
             "fix_attempts": fix_attempts,
             "diff": diff,
@@ -183,11 +185,16 @@ def get_job(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/report")
-def get_job_report(job_id: str) -> FileResponse:
+def get_job_report(job_id: str, download: bool = False) -> FileResponse:
+    """The run's PDF: inline so the report dialog can show it in a frame,
+    or as an attachment with ?download=1."""
     job = JOBS.get(job_id)
     if not job or not job.pdf_path or not Path(job.pdf_path).is_file():
         raise HTTPException(status_code=404, detail="No PDF report for this job.")
-    return FileResponse(job.pdf_path, media_type="application/pdf", filename=Path(job.pdf_path).name)
+    return FileResponse(
+        job.pdf_path, media_type="application/pdf", filename=Path(job.pdf_path).name,
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 @app.websocket("/ws/{job_id}")

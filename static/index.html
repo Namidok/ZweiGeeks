@@ -55,8 +55,10 @@
       <section class="panel outcome" id="outcome" hidden aria-labelledby="outcome-title">
         <h2 id="outcome-title"></h2>
         <p id="outcome-detail"></p>
+        <p class="jax-says" id="jax-says" hidden></p>
         <div class="outcome-actions">
-          <button type="button" class="btn-primary" id="open-report">Open report</button>
+          <button type="button" class="btn-primary" id="open-report">Open dashboard</button>
+          <button type="button" class="btn-secondary" id="open-pdf" hidden>View PDF</button>
           <a class="btn-secondary" id="pdf-link" href="#" download hidden>Download PDF</a>
         </div>
         <p class="working-tree" id="working-tree" hidden></p>
@@ -114,14 +116,22 @@
     </header>
 
     <div class="tabs" role="tablist" aria-label="Run results">
-      <button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="true">Findings <span class="count" id="count-findings"></span></button>
+      <button role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+      <button role="tab" id="tab-review" aria-controls="panel-review" aria-selected="false" tabindex="-1">JAX's review <span class="count" id="count-review"></span></button>
+      <button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="false" tabindex="-1">Findings <span class="count" id="count-findings"></span></button>
       <button role="tab" id="tab-fixes" aria-controls="panel-fixes" aria-selected="false" tabindex="-1">Fix attempts <span class="count" id="count-fixes"></span></button>
       <button role="tab" id="tab-diff" aria-controls="panel-diff" aria-selected="false" tabindex="-1">Changes <span class="count" id="count-diff"></span></button>
-      <button role="tab" id="tab-ideas" aria-controls="panel-ideas" aria-selected="false" tabindex="-1">Suggestions <span class="count" id="count-ideas"></span></button>
+      <button role="tab" id="tab-pdf" aria-controls="panel-pdf" aria-selected="false" tabindex="-1">PDF report</button>
     </div>
 
     <div class="report-body">
-      <div role="tabpanel" id="panel-findings" aria-labelledby="tab-findings">
+      <div role="tabpanel" id="panel-overview" aria-labelledby="tab-overview">
+        <div id="overview"></div>
+      </div>
+      <div role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden>
+        <div id="review-view"></div>
+      </div>
+      <div role="tabpanel" id="panel-findings" aria-labelledby="tab-findings" hidden>
         <div class="filters" id="filters" role="group" aria-label="Filter findings by severity">
           <button type="button" class="chip" data-bucket="all" aria-pressed="true">All</button>
           <button type="button" class="chip" data-bucket="high" aria-pressed="false">High</button>
@@ -136,8 +146,13 @@
       <div role="tabpanel" id="panel-diff" aria-labelledby="tab-diff" hidden>
         <div id="diff-view"></div>
       </div>
-      <div role="tabpanel" id="panel-ideas" aria-labelledby="tab-ideas" hidden>
-        <ul class="ideas" id="ideas-list"></ul>
+      <div role="tabpanel" id="panel-pdf" class="pdf-panel" aria-labelledby="tab-pdf" hidden>
+        <div class="pdf-bar">
+          <a class="btn-secondary" id="pdf-open-tab" href="#" target="_blank" rel="noopener">Open in a new tab</a>
+          <a class="btn-secondary" id="pdf-download" href="#" download>Download</a>
+        </div>
+        <iframe id="pdf-frame" title="PDF report" hidden></iframe>
+        <p class="empty" id="pdf-empty" hidden>No PDF was written for this run.</p>
       </div>
     </div>
   </dialog>

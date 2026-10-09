@@ -658,6 +658,28 @@
         stopWork();
         say(A, `${p.finding_count} findings`, p.blocking ? "❗" : "🎉");
         break;
+      case "review_start":
+        F.working = true;
+        scene.monitors.fixer = true;
+        go(F, "fixerSeat");
+        say(F, "final review", "📝");
+        break;
+      case "review_done":
+        if (p.verdict === "perfect") say(F, "looks great!", "🌟");
+        else if (p.verdict === "needs_work") say(F, "needs work", "🛠️");
+        else if (p.verdict === "incomplete") say(F, "review incomplete", "💤");
+        else say(F, "in good shape", "👍");
+        break;
+      case "improve_start":
+        F.working = true;
+        scene.monitors.fixer = true;
+        say(F, `${p.count} improvements`, "✨");
+        break;
+      case "improve_done":
+        F.working = false;
+        scene.monitors.fixer = false;
+        say(F, `${p.applied} improved`, p.applied ? "✨" : "🤷");
+        break;
       case "pdf_report":
         printReport();
         break;

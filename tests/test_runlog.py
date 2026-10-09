@@ -67,7 +67,7 @@ def test_run_log_records_attempts_and_summarises_rejections(tmp_path):
 
     summary = log.summary(AuditReport(findings=[finding()]), "no_blocking_findings")
 
-    assert summary["fixes_applied"] == {"llm": 1, "deterministic": 0}
+    assert summary["fixes_applied"] == {"llm": 1, "deterministic": 0, "improvement": 0}
     assert summary["rejections_by_reason"] == {"edit_mismatch": 1}
     assert summary["findings_by_source"] == {"bandit": {"first": 1, "last": 1}, "ruff": {"first": 1, "last": 1}}
     assert summary["llm_calls"]["fixer"]["calls"] == 1

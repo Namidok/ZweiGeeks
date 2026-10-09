@@ -150,6 +150,30 @@ class FixAttempt(BaseModel):
     transcript: list[dict] = Field(default_factory=list, exclude=True)
 
 
+class ReviewItem(BaseModel):
+    title: str
+    detail: str = ""
+    file: Optional[str] = None
+    line: Optional[int] = None
+    # bugs: "open" | "needs_manual_fix"; changes: "fixed";
+    # improvements: "applied" | "not_applied" | "suggested" (nothing to edit).
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class Review(BaseModel):
+    """JAX's closing review of the repo, written like a senior colleague's:
+    a verdict, what's good, the bugs still open, what was changed, and what
+    would make it better. Written even when the audit found nothing."""
+
+    verdict: str = Field(description="'perfect', 'good', 'needs_work' or 'incomplete'")
+    headline: str
+    strengths: list[str] = Field(default_factory=list)
+    bugs: list[ReviewItem] = Field(default_factory=list)
+    changes: list[ReviewItem] = Field(default_factory=list)
+    improvements: list[ReviewItem] = Field(default_factory=list)
+
+
 class GraphState(BaseModel):
     """The state LangGraph threads through the Auditor <-> Fixer loop."""
 

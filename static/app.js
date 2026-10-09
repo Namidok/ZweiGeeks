@@ -84,6 +84,22 @@
 
   const WHO = { auditor: "KAI", fixer: "JAX", system: "Run" };
 
+  const VERDICT_LABELS = {
+    perfect: "Looks great",
+    good: "In good shape",
+    needs_work: "Needs work",
+    incomplete: "Review incomplete",
+  };
+
+  const ITEM_STATUS = {
+    applied: "Done by JAX",
+    not_applied: "JAX tried, not applied",
+    suggested: "Suggestion",
+    open: "Open",
+    needs_manual_fix: "Needs a manual fix",
+    fixed: "Fixed",
+  };
+
   const humanize = (code) => String(code || "unknown").replace(/_/g, " ");
 
   // ---------- page state ----------
@@ -423,6 +439,37 @@
       setAgent("auditor", "Done", false);
     },
 
+    review_start() {
+      setAgent("fixer", "Writing the review", true);
+      run.toolRows.set("_review", logRow("fixer", "running", "Reading the whole repo for a final review…"));
+    },
+
+    review_done({ verdict, headline, improvements, to_apply }) {
+      const row = run.toolRows.get("_review");
+      const subs = [{ prose: headline }];
+      if (improvements) {
+        subs.push({ prose: `${plural(improvements, "improvement")}${to_apply && run.mode !== "audit" ? `, ${to_apply} JAX can make now` : ""}` });
+      }
+      const state = verdict === "needs_work" ? "warn" : verdict === "incomplete" ? "error" : "ok";
+      const text = `Review: ${VERDICT_LABELS[verdict] || humanize(verdict)}`;
+      if (row) row.set(state, text, subs);
+      else logRow("fixer", state, text, subs);
+      run.toolRows.delete("_review");
+      setAgent("fixer", VERDICT_LABELS[verdict] || "Review written", false);
+    },
+
+    improve_start({ count }) {
+      passRow("JAX's improvements");
+      logRow("fixer", "running", `Making ${plural(count, "improvement")} from the review`);
+      setAgent("fixer", "Making improvements", true);
+    },
+
+    improve_done({ applied, attempted }) {
+      settleFixRows();
+      logRow("fixer", applied ? "ok" : "neutral", `${applied} of ${plural(attempted, "improvement")} made and verified`);
+      setAgent("fixer", "Done", false);
+    },
+
     pdf_report() {
       systemRow("PDF report written", "ok");
     },
@@ -634,6 +681,7 @@
   const bucketOf = (f) => (isHigh(f) ? "high" : f.severity === "medium" ? "medium" : "low");
 
   function verdictFor(result) {
+    const reason = String(result.stop_reason || "");
     const findings = result.findings || [];
     const applied = (result.fix_attempts || []).filter((a) => a.patch_applied).length;
     const blocking = findings.filter(isBlocking).length;
@@ -704,7 +752,9 @@
   function renderFailure(error) {
     renderVerdict({ state: "error", title: "Run failed", detail: error });
     $("open-report").hidden = true;
+    $("open-pdf").hidden = true;
     $("pdf-link").hidden = true;
+    $("jax-says").hidden = true;
     $("working-tree").hidden = true;
     $("skipped").hidden = true;
   }
@@ -713,17 +763,24 @@
     renderVerdict(verdictFor(result));
     $("open-report").hidden = false;
 
-    const pdf = $("pdf-link");
-    pdf.hidden = !result.has_pdf;
-    pdf.href = `/api/jobs/${encodeURIComponent(run.jobId)}/report`;
+    const pdfUrl = `/api/jobs/${encodeURIComponent(run.jobId)}/report`;
+    $("pdf-link").hidden = !result.has_pdf;
+    $("pdf-link").href = `${pdfUrl}?download=1`;
+    $("open-pdf").hidden = !result.has_pdf;
+    preparePdf(result.has_pdf ? pdfUrl : null);
+
+    const says = $("jax-says");
+    says.hidden = !result.review;
+    if (result.review) says.textContent = `JAX: ${result.review.headline}`;
 
     renderWorkingTree(result);
 
+    renderOverview(result);
+    renderReview(result.review, result.improvements || [], result.mode);
     renderFindings(result.findings || []);
     renderAttempts(result.fix_attempts || [], result.mode);
     renderDiff(result.diff || "", result.mode);
-    renderIdeas(result.improvements || []);
-    selectTab($("tab-findings"), false);
+    selectTab($("tab-overview"), false);
     if (run.live) openReport();
   }
 
@@ -731,7 +788,39 @@
     if (!ui.report.open) ui.report.showModal();
   }
 
-  $("open-report").addEventListener("click", openReport);
+  $("open-report").addEventListener("click", () => {
+    selectTab($("tab-overview"), false);
+    openReport();
+  });
+  $("open-pdf").addEventListener("click", () => {
+    selectTab($("tab-pdf"), false);
+    openReport();
+  });
+
+  // ---------- PDF tab ----------
+
+  // The frame only loads when its tab is first shown, so a run's results
+  // don't wait on the PDF, and a new run's frame never shows the old one.
+  let pdfUrl = null;
+
+  function preparePdf(url) {
+    pdfUrl = url;
+    const frame = $("pdf-frame");
+    frame.removeAttribute("src");
+    frame.hidden = !url;
+    $("pdf-empty").hidden = Boolean(url);
+    for (const id of ["pdf-open-tab", "pdf-download"]) $(id).hidden = !url;
+    if (url) {
+      $("pdf-open-tab").href = url;
+      $("pdf-download").href = `${url}?download=1`;
+    }
+  }
+
+  function showPdf() {
+    const frame = $("pdf-frame");
+    // A cache-buster: the same repo always writes the same PDF file name.
+    if (pdfUrl && !frame.getAttribute("src")) frame.src = `${pdfUrl}?t=${Date.now()}`;
+  }
 
   const workingTreeLine = (n) => `${plural(n, "file")} changed in your working tree. Open Source Control to review.`;
 
@@ -895,15 +984,284 @@
     }
   }
 
-  function renderIdeas(ideas) {
-    const list = $("ideas-list");
-    list.replaceChildren();
-    $("count-ideas").textContent = ideas.length ? String(ideas.length) : "";
-    if (!ideas.length) {
-      list.append(el("li", "empty", "No broader suggestions this run."));
-      return;
+  // ---------- overview (the run's dashboard) ----------
+  //
+  // Laid out by agent: JAX's verdict and the run facts on top, then one
+  // card for what KAI found and one for what JAX did about it.
+
+  function jaxBanner(review) {
+    const banner = el("div", `jax-banner is-${review.verdict}`);
+    const face = el("canvas", "portrait");
+    face.setAttribute("aria-hidden", "true");
+    if (office) office.portrait(face, "fixer");
+    const words = el("div", "jax-words");
+    words.append(
+      el("span", "verdict-pill", VERDICT_LABELS[review.verdict] || humanize(review.verdict)),
+      el("p", null, review.headline),
+    );
+    banner.append(face, words);
+    return banner;
+  }
+
+  function agentCard(who, name, role) {
+    const card = el("section", `dash-card dash-${who}`);
+    const head = el("header", "dash-head");
+    const face = el("canvas", "portrait");
+    face.setAttribute("aria-hidden", "true");
+    if (office) office.portrait(face, who);
+    const title = el("h3");
+    title.append(document.createTextNode(name), el("span", "role", ` ${role}`));
+    head.append(face, title);
+    card.append(head);
+    return card;
+  }
+
+  function statRow(stats) {
+    const row = el("div", "dash-stats");
+    for (const [label, value, tone] of stats) {
+      const stat = el("div", `dash-stat${tone ? ` is-${tone}` : ""}`);
+      stat.append(el("span", "dash-num", value), el("span", "dash-label", label));
+      row.append(stat);
     }
-    for (const idea of ideas) list.append(el("li", null, idea));
+    return row;
+  }
+
+  function dashBlock(title) {
+    const block = el("div", "dash-block");
+    block.append(el("h4", null, title));
+    return block;
+  }
+
+  // label | bar (coloured segments, scaled to `max`) | count
+  function barRow(label, parts, max, dotTone) {
+    const row = el("div", "bar-row");
+    const name = el("span", "bar-label");
+    if (dotTone) name.append(el("span", `dot-key seg-${dotTone}`));
+    name.append(document.createTextNode(label));
+    const track = el("div", "bar-track");
+    let total = 0;
+    for (const part of parts) {
+      total += part.value;
+      if (!part.value) continue;
+      const seg = el("span", `seg seg-${part.tone}`);
+      seg.style.width = `${(part.value / Math.max(max, 1)) * 100}%`;
+      seg.title = `${part.label}: ${part.value}`;
+      track.append(seg);
+    }
+    row.append(name, track, el("span", "bar-total", total));
+    return row;
+  }
+
+  function legend(items) {
+    const keys = el("div", "legend");
+    for (const [tone, label] of items) {
+      const key = el("span", "key");
+      key.append(el("span", `swatch seg-${tone}`), document.createTextNode(label));
+      keys.append(key);
+    }
+    return keys;
+  }
+
+  function runFacts(result) {
+    const s = result.summary;
+    if (!s) return null;
+    const facts = el("ul", "dash-meta");
+    const add = (label, value) => {
+      const li = el("li");
+      li.append(el("span", null, label), el("strong", null, value));
+      facts.append(li);
+    };
+    add("Mode", result.mode === "audit" ? "Audit only" : "Audit and fix");
+    add("Time", `${Math.round(s.wall_time_s)} s`);
+    add("Audits", s.audits);
+    if (result.mode !== "audit") add("Fix passes", s.fix_passes);
+    if (s.llm_total) add("Model calls", `${s.llm_total.calls} · ${Math.round(s.llm_total.seconds)} s`);
+    add("Stopped", humanize(s.stop_reason));
+    return facts;
+  }
+
+  function kaiCard(findings) {
+    const card = agentCard("auditor", "KAI", "Audit");
+    const fixed = findings.filter((f) => f.fixed).length;
+    const dismissed = findings.filter((f) => !f.fixed && f.dismissed).length;
+    const open = findings.length - fixed - dismissed;
+    card.append(statRow([
+      ["Findings", findings.length],
+      ["Still open", open, open ? "warn" : "good"],
+      ["False positives", dismissed],
+    ]));
+
+    const severity = dashBlock("By severity");
+    if (!findings.length) {
+      severity.append(el("p", "empty", "Nothing found."));
+    } else {
+      const rows = ["high", "medium", "low"].map((b) => {
+        const items = findings.filter((f) => bucketOf(f) === b);
+        return [b, [
+          { tone: "fixed", label: "Fixed", value: items.filter((f) => f.fixed).length },
+          { tone: "dismissed", label: "False positive", value: items.filter((f) => !f.fixed && f.dismissed).length },
+          { tone: b, label: "Open", value: items.filter((f) => !f.fixed && !f.dismissed).length },
+        ]];
+      });
+      const max = Math.max(...rows.map(([, parts]) => parts.reduce((n, p) => n + p.value, 0)));
+      for (const [b, parts] of rows) severity.append(barRow(b[0].toUpperCase() + b.slice(1), parts, max, b));
+      severity.append(legend([["fixed", "Fixed"], ["dismissed", "False positive"], ["open", "Open"]]));
+    }
+    card.append(severity);
+
+    if (findings.length) {
+      const sources = dashBlock("Found by");
+      const byTool = new Map();
+      for (const f of findings) byTool.set(f.source_tool, (byTool.get(f.source_tool) || 0) + 1);
+      const rows = [...byTool.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+      const max = rows.length ? rows[0][1] : 1;
+      for (const [tool, n] of rows) {
+        const label = TOOL_LABELS[tool] || (tool === "llm-review" ? "Model review" : tool);
+        sources.append(barRow(label, [{ tone: "auditor", label: "Findings", value: n }], max));
+      }
+      card.append(sources);
+    }
+    return card;
+  }
+
+  function nextSteps(review) {
+    if (!review) return [];
+    const bugs = review.bugs.map((b) => ({ ...b, kind: "bug" }));
+    const ideas = review.improvements.filter((i) => i.status !== "applied").map((i) => ({ ...i, kind: "idea" }));
+    return [...bugs, ...ideas].slice(0, 4);
+  }
+
+  function jaxCard(result) {
+    const card = agentCard("fixer", "JAX", "Fixes");
+    const audit = result.mode === "audit";
+    const attempts = result.fix_attempts || [];
+    const improvements = attempts.filter((a) => a.kind === "improvement");
+    const fixes = attempts.filter((a) => a.kind !== "improvement");
+    const fixed = (result.findings || []).filter((f) => f.fixed).length;
+    const improved = improvements.filter((a) => a.patch_applied).length;
+
+    card.append(statRow([
+      ["Fixed", audit ? "–" : fixed, fixed ? "good" : null],
+      ["Files changed", audit ? "–" : (result.applied_files || []).length],
+      ["Improvements", audit ? "–" : `${improved}/${improvements.length}`, improved ? "good" : null],
+    ]));
+
+    const edits = dashBlock("Edits");
+    if (audit) {
+      edits.append(el("p", "empty", "Audit-only run: JAX didn't change anything."));
+    } else if (!attempts.length) {
+      edits.append(el("p", "empty", "Nothing needed an edit."));
+    } else {
+      const rows = [
+        ["Fixes", fixes],
+        ["Improvements", improvements],
+      ].filter(([, list]) => list.length);
+      const max = Math.max(...rows.map(([, list]) => list.length));
+      for (const [label, list] of rows) {
+        const ok = list.filter((a) => a.patch_applied).length;
+        edits.append(barRow(label, [
+          { tone: "fixed", label: "Applied", value: ok },
+          { tone: "rejected", label: "Not applied", value: list.length - ok },
+        ], max));
+      }
+      edits.append(legend([["fixed", "Applied"], ["rejected", "Not applied"]]));
+    }
+    card.append(edits);
+
+    const steps = nextSteps(result.review);
+    const next = dashBlock("Next steps");
+    if (!steps.length) {
+      next.append(el("p", "empty", result.review ? "Nothing left. Review the changes and commit." : "No review this run."));
+    } else {
+      const list = el("ul", "next-list");
+      for (const item of steps) {
+        const li = el("li", "next-item");
+        // Short labels: the badge column is narrow; the full status is in the review tab.
+        const label = item.kind === "bug" ? "Bug" : item.status === "not_applied" ? "By hand" : "Idea";
+        li.append(el("span", `rv-badge rv-${item.kind === "bug" ? "open" : item.status}`, label));
+        const text = el("div", "next-text");
+        text.append(el("span", "next-title", item.title));
+        if (item.file) text.append(el("span", "next-file", item.line ? `${item.file}:${item.line}` : item.file));
+        li.append(text);
+        list.append(li);
+      }
+      next.append(list);
+    }
+    if (result.review) {
+      const more = el("button", "btn-link", "Open JAX's full review →");
+      more.type = "button";
+      more.addEventListener("click", () => selectTab($("tab-review")));
+      next.append(more);
+    }
+    card.append(next);
+    return card;
+  }
+
+  function renderOverview(result) {
+    const box = $("overview");
+    box.replaceChildren();
+    const top = el("div", "dash-top");
+    if (result.review) top.append(jaxBanner(result.review));
+    const facts = runFacts(result);
+    if (facts) top.append(facts);
+    box.append(top);
+
+    const grid = el("div", "dash-grid");
+    grid.append(kaiCard(result.findings || []), jaxCard(result));
+    box.append(grid);
+  }
+
+  // ---------- JAX's review ----------
+
+  function reviewItem(item) {
+    const li = el("li", "rv-item");
+    const top = el("div", "rv-top");
+    top.append(el("span", "rv-title", item.title));
+    if (item.status) top.append(el("span", `rv-badge rv-${item.status}`, ITEM_STATUS[item.status] || humanize(item.status)));
+    li.append(top);
+    if (item.file) li.append(el("span", "rv-file", item.line ? `${item.file}:${item.line}` : item.file));
+    if (item.detail) li.append(el("p", "rv-detail", item.detail));
+    if (item.notes && item.status !== "fixed") li.append(el("p", "rv-notes", item.notes));
+    return li;
+  }
+
+  function reviewSection(title, items, render, emptyText) {
+    const section = el("section", "rv-section");
+    section.append(el("h3", null, items.length ? `${title} (${items.length})` : title));
+    if (!items.length) {
+      section.append(el("p", "empty", emptyText));
+      return section;
+    }
+    const list = el("ul", "rv-list");
+    for (const item of items) list.append(render(item));
+    section.append(list);
+    return section;
+  }
+
+  function renderReview(review, ideas, mode) {
+    const view = $("review-view");
+    view.replaceChildren();
+    $("count-review").textContent = review && review.improvements.length ? String(review.improvements.length) : "";
+    if (!review) {
+      view.append(el("p", "empty", "JAX didn't write a review for this run."));
+    } else {
+      view.append(jaxBanner(review));
+      view.append(
+        reviewSection("What's good", review.strengths, (s) => el("li", "rv-item rv-good", s), "Nothing singled out."),
+        reviewSection("Bugs", review.bugs, reviewItem, "No open bugs."),
+        reviewSection(
+          "Changes made", review.changes, reviewItem,
+          mode === "audit" ? "Audit-only runs don't change anything." : "No findings needed fixing.",
+        ),
+        reviewSection("Improvements", review.improvements, reviewItem, "No improvements to suggest."),
+      );
+      if (mode !== "audit" && review.improvements.some((i) => i.file)) {
+        view.append(el("p", "empty", "Improvements marked \u201cDone by JAX\u201d are in your working tree with the fixes, each one checked by the same gates and verifier. Suggestions without a file (a LICENSE, CI, tests) are yours to decide."));
+      }
+    }
+    if (ideas.length) {
+      view.append(reviewSection("KAI's broader ideas", ideas, (s) => el("li", "rv-item rv-idea", s), ""));
+    }
   }
 
   // ---------- tabs (ARIA tabs pattern, arrow-key navigation) ----------
@@ -917,6 +1275,7 @@
       t.tabIndex = selected ? 0 : -1;
       $(t.getAttribute("aria-controls")).hidden = !selected;
     }
+    if (tab.id === "tab-pdf") showPdf();
     if (focus) tab.focus();
   }
 

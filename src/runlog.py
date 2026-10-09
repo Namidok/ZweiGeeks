@@ -112,7 +112,10 @@ class RunLog:
             "dismissed": dismissed,
             "speculative_dropped": sum(a.get("speculative", 0) for a in self._audits),
             "needs_manual_fix": sum(1 for f in (report.findings if report else []) if f.needs_manual_fix),
-            "fixes_applied": {"llm": applied.get("llm", 0), "deterministic": applied.get("deterministic", 0)},
+            "fixes_applied": {
+                "llm": applied.get("llm", 0), "deterministic": applied.get("deterministic", 0),
+                "improvement": applied.get("improvement", 0),
+            },
             "rejections_by_reason": dict(rejections.most_common()),
             "findings_by_source": {s: {"first": first.get(s, 0), "last": last.get(s, 0)} for s in sources},
             "findings_total": len(report.findings) if report else 0,
@@ -133,7 +136,8 @@ def format_summary(s: dict) -> str:
     out = [
         f"ZweiGeeks run {s['run_id']}  ({s['mode']}, stop: {s['stop_reason']}, {s['wall_time_s']}s)",
         f"Audits: {s['audits']}   Fix passes: {s['fix_passes']}   Fix attempts: {s['fix_attempts']}   "
-        f"Applied: {s['fixes_applied']['llm']} LLM + {s['fixes_applied']['deterministic']} deterministic",
+        f"Applied: {s['fixes_applied']['llm']} LLM + {s['fixes_applied']['deterministic']} deterministic"
+        f" + {s['fixes_applied'].get('improvement', 0)} improvements",
         f"Needs manual fix: {s.get('needs_manual_fix', 0)}   Dismissed as false positives: {s.get('dismissed', 0)}   "
         f"Speculative findings dropped: {s.get('speculative_dropped', 0)}   Review cache hits: {s.get('review_cache_hits', 0)}",
         "",

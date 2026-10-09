@@ -1,6 +1,8 @@
 """Turns an AuditReport into a PDF: findings grouped into the three-tier
 High (red) / Medium (yellow) / Low (green) scheme, each with its
-resolution, plus an Improvements section at the end.
+resolution, plus an Improvements section at the end. When JAX wrote a
+closing review it comes first: verdict, what's good, bugs still open, the
+changes made and the improvements (applied or suggested).
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from reportlab.platypus import (
 )
 
 from . import config
-from .schemas import AuditReport, Finding
+from .schemas import AuditReport, Finding, Review, ReviewItem
 
 BUCKET_COLOR = {
     "high": colors.HexColor("#dc2626"),
@@ -62,6 +64,17 @@ _FINDING_RESOLUTION = ParagraphStyle(
 )
 _SECTION_HEADER = ParagraphStyle("ZGSectionHeader", parent=_styles["Heading2"], fontSize=14, spaceBefore=20, spaceAfter=10)
 _IMPROVEMENT_ITEM = ParagraphStyle("ZGImprovement", parent=_styles["Normal"], fontSize=10.5, leading=14)
+_VERDICT_COLOR = {
+    "perfect": colors.HexColor("#16a34a"), "good": colors.HexColor("#2563eb"),
+    "needs_work": colors.HexColor("#dc2626"), "incomplete": colors.HexColor("#d97706"),
+}
+_VERDICT_LABEL = {"perfect": "LOOKS GREAT", "good": "GOOD", "needs_work": "NEEDS WORK", "incomplete": "INCOMPLETE"}
+_VERDICT_TEXT = ParagraphStyle("ZGVerdict", parent=_styles["Normal"], fontSize=11.5, leading=16, textColor=colors.white)
+_REVIEW_SUB = ParagraphStyle("ZGReviewSub", parent=_styles["Heading3"], fontSize=11.5, spaceBefore=10, spaceAfter=4)
+_ITEM_STATUS = {
+    "applied": "Done by JAX", "not_applied": "JAX tried, not applied", "suggested": "Suggestion",
+    "open": "Open", "needs_manual_fix": "Needs a manual fix", "fixed": "Fixed",
+}
 
 
 def _bucket_header(bucket: str, count: int):
@@ -122,7 +135,49 @@ def _finding_block(f: Finding, bucket: str):
     return row
 
 
-def generate_pdf_report(report: AuditReport, repo_path: str, output_path: str | None = None) -> str:
+def _review_item(item: ReviewItem) -> Paragraph:
+    where = ""
+    if item.file:
+        where = f" &nbsp;<font color=\"#6b7280\">{escape(item.file)}{f':{item.line}' if item.line else ''}</font>"
+    status = _ITEM_STATUS.get(item.status or "", "")
+    text = f"<b>{escape(item.title)}</b>{where}"
+    if status:
+        text += f" &nbsp;<font color=\"#6b7280\">[{escape(status)}]</font>"
+    if item.detail:
+        text += f"<br/>{escape(item.detail)}"
+    return Paragraph(text, _IMPROVEMENT_ITEM)
+
+
+def _review_section(review: Review) -> list:
+    banner = Table(
+        [[Paragraph(f"<b>JAX: {_VERDICT_LABEL.get(review.verdict, review.verdict.upper())}</b> &nbsp; "
+                    f"{escape(review.headline)}", _VERDICT_TEXT)]],
+        colWidths=[6.6 * inch],
+    )
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _VERDICT_COLOR.get(review.verdict, colors.grey)),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story: list = [Paragraph("JAX's review", _SECTION_HEADER), banner]
+    groups = [
+        ("What's good", [Paragraph(escape(s), _IMPROVEMENT_ITEM) for s in review.strengths]),
+        ("Bugs still open", [_review_item(i) for i in review.bugs]),
+        ("Changes made", [_review_item(i) for i in review.changes]),
+        ("Improvements", [_review_item(i) for i in review.improvements]),
+    ]
+    for title, items in groups:
+        if not items:
+            continue
+        story.append(Paragraph(f"{title} ({len(items)})", _REVIEW_SUB))
+        story.append(ListFlowable([ListItem(i) for i in items], bulletType="bullet", leftIndent=14))
+    story.append(Spacer(1, 14))
+    return story
+
+
+def generate_pdf_report(
+    report: AuditReport, repo_path: str, output_path: str | None = None, review: Review | None = None,
+) -> str:
     repo_name = Path(repo_path).name or "repo"
 
     if output_path is None:
@@ -173,6 +228,10 @@ def generate_pdf_report(report: AuditReport, repo_path: str, output_path: str | 
                 _WARNING,
             )
         )
+
+    if review is not None:
+        story.extend(_review_section(review))
+        story.append(Paragraph("Audit findings", _SECTION_HEADER))
 
     if not report.findings:
         # An aborted review with nothing found reviewed nothing - never call that clean.

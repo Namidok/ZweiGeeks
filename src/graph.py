@@ -21,12 +21,12 @@ from typing import Callable, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from . import config, git_utils
-from .agents import auditor, deterministic, fixer
+from .agents import auditor, deterministic, fixer, reviewer
 from .fingerprint import fingerprint_of
 from .ollama_client import call_listener
 from .report import generate_pdf_report
 from .runlog import RunLog, format_summary
-from .schemas import AuditReport, Finding, FixAttempt
+from .schemas import AuditReport, Finding, FixAttempt, Review
 
 EventCallback = Optional[Callable[[str, dict], None]]
 
@@ -53,6 +53,8 @@ class AgentState(TypedDict):
     left_alone: list[str]
     # The first audit's suggestions; re-audits don't regenerate them.
     improvements: list[str]
+    # JAX's closing review, written after the loop (see _close_with_review).
+    review: Optional[Review]
 
 
 def _emit(cb: EventCallback, event: str, payload: dict) -> None:
@@ -299,6 +301,24 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
     return graph.compile()
 
 
+def _close_with_review(state: dict, repo_path: str, on_event: EventCallback,
+                       runlog: Optional[RunLog], apply: bool) -> Review:
+    """JAX's closing review of the repo - also when nothing was found - and,
+    in a fix run, JAX implementing the file-level improvements through the
+    Fixer's gates. Their attempts join the run's fix attempts and diff."""
+    report = state["report"]
+    review = reviewer.write_review(repo_path, report, on_event=on_event)
+    if (apply and config.JAX_APPLY_IMPROVEMENTS and not report.audit_incomplete
+            and state.get("stop_reason") != "fixer_ollama_timeouts"):
+        protected = state.get("protected") or frozenset()
+        for finding, attempt in reviewer.apply_improvements(repo_path, review, on_event, protected):
+            state["fix_attempts"].append(attempt)
+            if runlog:
+                runlog.fix_attempt(state.get("iteration", 0), finding, attempt)
+    state["review"] = review
+    return review
+
+
 def run_audit_only(repo_path: str, on_event: EventCallback = None) -> dict:
     """Runs just the Auditor - no worktree, no Fixer, no writes to the
     target repo at all - and generates the PDF report from the result.
@@ -310,7 +330,8 @@ def run_audit_only(repo_path: str, on_event: EventCallback = None) -> dict:
     runlog = RunLog(repo_path, "audit")
     with call_listener(runlog.on_llm_call):
         report = auditor.run_audit(repo_path, on_event=on_event)
-    runlog.audit(1, report)
+        runlog.audit(1, report)
+        review = _close_with_review({"report": report}, repo_path, on_event, runlog, apply=False)
     _emit(
         on_event,
         "audit_only_done",
@@ -319,14 +340,14 @@ def run_audit_only(repo_path: str, on_event: EventCallback = None) -> dict:
 
     pdf_path = None
     try:
-        pdf_path = generate_pdf_report(report, repo_path)
+        pdf_path = generate_pdf_report(report, repo_path, review=review)
         _emit(on_event, "pdf_report", {"path": pdf_path})
     except Exception as exc:  # noqa: BLE001 - a report failure shouldn't hide the audit results
         _emit(on_event, "pdf_report_failed", {"error": str(exc)})
 
     stop_reason = f"{report.incomplete_reason}_incomplete" if report.audit_incomplete else "audit_only"
     summary = _finish_summary(runlog, report, stop_reason, on_event)
-    return {"report": report, "pdf_path": pdf_path, "summary": summary}
+    return {"report": report, "review": review, "pdf_path": pdf_path, "summary": summary}
 
 
 def _finish_summary(runlog: RunLog, report: AuditReport, stop_reason: Optional[str], on_event: EventCallback) -> dict:
@@ -369,6 +390,7 @@ def run_pipeline(
         "consecutive_fix_timeouts": 0,
         "history": {},
         "improvements": [],
+        "review": None,
         "protected": frozenset(),
     }
 
@@ -378,6 +400,7 @@ def run_pipeline(
     try:
         with call_listener(runlog.on_llm_call):
             final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
+            _close_with_review(final_state, worktree, on_event, runlog, apply=True)
     finally:
         # Reached on success, on errors and on Ctrl+C: whatever was fixed so
         # far still goes to the user's working tree, then the worktree goes.
@@ -397,7 +420,7 @@ def run_pipeline(
 
     pdf_path = None
     try:
-        pdf_path = generate_pdf_report(final_state["report"], repo_path)
+        pdf_path = generate_pdf_report(final_state["report"], repo_path, review=final_state.get("review"))
         _emit(on_event, "pdf_report", {"path": pdf_path})
     except Exception as exc:  # noqa: BLE001 - a report failure shouldn't hide the audit results
         _emit(on_event, "pdf_report_failed", {"error": str(exc)})
@@ -468,6 +491,7 @@ def _run_in_place(repo, repo_path: str, max_iterations: int, on_event: EventCall
         "consecutive_fix_timeouts": 0,
         "history": {},
         "improvements": [],
+        "review": None,
         "protected": protected,
         "left_alone": [],
     }
@@ -476,6 +500,7 @@ def _run_in_place(repo, repo_path: str, max_iterations: int, on_event: EventCall
     try:
         with call_listener(runlog.on_llm_call):
             final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
+            _close_with_review(final_state, repo_path, on_event, runlog, apply=True)
     finally:
         # Also on errors and Ctrl+C: whatever was fixed so far stays in the files.
         changed = [
@@ -498,7 +523,7 @@ def _run_in_place(repo, repo_path: str, max_iterations: int, on_event: EventCall
 
     pdf_path = None
     try:
-        pdf_path = generate_pdf_report(final_state["report"], repo_path)
+        pdf_path = generate_pdf_report(final_state["report"], repo_path, review=final_state.get("review"))
         _emit(on_event, "pdf_report", {"path": pdf_path})
     except Exception as exc:  # noqa: BLE001 - a report failure shouldn't hide the audit results
         _emit(on_event, "pdf_report_failed", {"error": str(exc)})

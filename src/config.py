@@ -114,3 +114,10 @@ ISOLATE_RUNS = os.environ.get("ZWEIGEEKS_ISOLATE", "0") == "1"
 # any editor. Set ZWEIGEEKS_PROTECT_DIRTY=1 to skip files you've changed.
 PROTECT_DIRTY_FILES = os.environ.get("ZWEIGEEKS_PROTECT_DIRTY", "0") == "1"
 
+# After the fix loop JAX writes a closing review (what's good, bugs, changes,
+# improvements) and, in a fix run, implements the improvements that name one
+# existing file - at most this many, each through the Fixer's gates. Set
+# JAX_APPLY_IMPROVEMENTS=0 to keep them as suggestions only.
+JAX_APPLY_IMPROVEMENTS = os.environ.get("JAX_APPLY_IMPROVEMENTS", "1") != "0"
+JAX_MAX_IMPROVEMENTS = int(os.environ.get("JAX_MAX_IMPROVEMENTS", "5"))
+
