@@ -68,16 +68,24 @@ def dependency(name, version, fix_versions):
                    autofix={"tool": "pin", "package": name, "version": version, "fix_versions": fix_versions})
 
 
-def test_pins_it_cant_bump_are_reported_not_guessed(git_repo):
-    (git_repo / "requirements.txt").write_text("flask>=1.0  # not pinned\nolddep==1.0\n")
-    report = AuditReport(findings=[dependency("flask", "1.0", ["2.2.5"]), dependency("olddep", "1.0", [])])
+def test_ranges_are_raised_sub_dependencies_added_and_unfixable_ones_left(git_repo):
+    (git_repo / "requirements.txt").write_text("flask>=1.0  # web\nolddep==1.0\nbare\n")
+    report = AuditReport(findings=[
+        dependency("flask", "2.0.1", ["2.2.5"]),         # >= range: raise the minimum
+        dependency("olddep", "1.0", []),                 # no fixed release: leave it
+        dependency("urllib3", "1.26.4", ["1.26.5"]),     # not listed: a vulnerable sub-dependency
+        dependency("bare", "0.1", ["0.2"]),              # listed without a version: by hand
+    ])
+    report.findings[2].rule = "urllib3:PYSEC-2021-108"
 
     results = {f.title: a for f, a in deterministic.run(str(git_repo), report)}
 
-    assert results["flask"].reason == "not_pinned" and not results["flask"].patch_applied
-    assert results["olddep"].reason == "no_fixed_version"
-    assert (git_repo / "requirements.txt").read_text() == "flask>=1.0  # not pinned\nolddep==1.0\n"
-    assert all(f.autofix is None for f in report.findings)  # not offered again next pass
+    assert results["flask"].patch_applied and results["urllib3"].patch_applied
+    assert results["olddep"].reason == "no_fixed_version" and results["bare"].reason == "not_pinned"
+    assert (git_repo / "requirements.txt").read_text() == (
+        "flask>=2.2.5  # web\nolddep==1.0\nbare\n"
+        "urllib3>=1.26.5  # added by ZweiGeeks: fixes PYSEC-2021-108\n"
+    )
 
 
 def test_find_pin_handles_extras_case_and_separators():
@@ -91,6 +99,8 @@ def test_deterministic_work_alone_keeps_the_loop_going(audited, monkeypatch):
     """Only LOW ruff and file-bound pip-audit findings: nothing for the LLM,
     but the fix pass still runs - and the re-audit sees them gone."""
     repo, first = audited
+    from src import config
+    monkeypatch.setattr(config, "FIXER_MIN_SEVERITY", "medium")  # keep the LLM out of this one
     llm_fix = mock.Mock()
     monkeypatch.setattr(fixer, "apply_fix", llm_fix)
     first.findings = [f for f in first.findings if f.source_tool in ("ruff", "pip-audit")]

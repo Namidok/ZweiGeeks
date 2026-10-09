@@ -66,7 +66,30 @@ def test_fixes_are_edited_in_place_and_left_uncommitted(project_repo, monkeypatc
     assert (Path(final["summary"]["log_path"]).parent / "fixes.patch").exists()
 
 
-def test_a_file_you_already_changed_is_left_alone(project_repo, monkeypatch):
+def test_fixes_go_on_top_of_your_own_changes_and_report_only_ours(project_repo, monkeypatch):
+    (project_repo / "app.py").write_text("eval(input())  # my edit\nx = 1\n")
+    (project_repo / "lib.py").write_text("exec(input())  # untouched by the run\n")
+    reports = iter([AuditReport(findings=[finding("app.py")]), AuditReport()])
+    monkeypatch.setattr(auditor, "run_audit", lambda *a, **k: next(reports))
+
+    def fix(repo_path, f, on_event=None, **_):
+        p = Path(repo_path) / f.file
+        p.write_text(p.read_text().replace("eval(input())", "print(input())"))
+        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="edited")
+
+    monkeypatch.setattr(fixer, "apply_fix", fix)
+
+    final = graph.run_pipeline(str(project_repo), max_iterations=1)
+
+    assert (project_repo / "app.py").read_text() == "print(input())  # my edit\nx = 1\n"  # both kept
+    assert final["applied_files"] == ["app.py"]  # lib.py was only yours: not listed
+    changed = [line for line in final["diff"].splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+    assert changed == ["-eval(input())  # my edit", "+print(input())  # my edit"]  # only our edit
+
+
+def test_a_file_you_already_changed_is_left_alone_when_protection_is_on(project_repo, monkeypatch):
+    from src import config
+    monkeypatch.setattr(config, "PROTECT_DIRTY_FILES", True)
     (project_repo / "app.py").write_text("eval(input())  # my edit\n")
     findings = [finding("app.py"), finding("lib.py", "SEC-002")]
     reports = iter([AuditReport(findings=findings), AuditReport()])

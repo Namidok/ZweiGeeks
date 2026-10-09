@@ -868,7 +868,8 @@ def _apply_fix(
         edits = _parse_edits(reply)
         if not edits:
             dismissal = _dismissal(reply)
-            if dismissal and finding.source_tool in _STATIC_TOOLS and _line_still_there(original_lf, finding):
+            if (dismissal and finding.source_tool in _STATIC_TOOLS and finding.severity.value != "low"
+                    and _line_still_there(original_lf, finding)):
                 # A static tool's finding is a fact about this exact line; the
                 # model saying "nothing to fix" doesn't make it go away.
                 return _reject(

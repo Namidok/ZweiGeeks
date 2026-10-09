@@ -92,9 +92,9 @@ FIXER_IMPORT_TIMEOUT_SECONDS = int(os.environ.get("FIXER_IMPORT_TIMEOUT_SECONDS"
 # Lowest severity the LLM Fixer works on. Findings are attempted most
 # severe first; anything below this is reported but never sent to the model
 # (ruff's own safe fixes and dependency pin bumps run regardless).
-FIXER_MIN_SEVERITY = os.environ.get("FIXER_MIN_SEVERITY", "medium").lower()
+FIXER_MIN_SEVERITY = os.environ.get("FIXER_MIN_SEVERITY", "low").lower()
 # Most findings the LLM Fixer attempts in one pass (most severe first).
-FIXER_MAX_FIXES_PER_PASS = int(os.environ.get("FIXER_MAX_FIXES_PER_PASS", "8"))
+FIXER_MAX_FIXES_PER_PASS = int(os.environ.get("FIXER_MAX_FIXES_PER_PASS", "15"))
 # A finding whose fixes keep being rejected is retried - with the rejection
 # reason in the prompt and a different seed - at most this many times, then
 # marked needs_manual_fix.
@@ -110,4 +110,7 @@ REVIEW_CACHE_DIR = os.environ.get("REVIEW_CACHE_DIR")
 # uncommitted, so Source Control shows them). Set ZWEIGEEKS_ISOLATE=1 to work
 # in a private detached git worktree instead and apply the result at the end.
 ISOLATE_RUNS = os.environ.get("ZWEIGEEKS_ISOLATE", "0") == "1"
+# Off by default: fixes are made on top of your own uncommitted edits, like
+# any editor. Set ZWEIGEEKS_PROTECT_DIRTY=1 to skip files you've changed.
+PROTECT_DIRTY_FILES = os.environ.get("ZWEIGEEKS_PROTECT_DIRTY", "0") == "1"
 

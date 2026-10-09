@@ -493,3 +493,12 @@ def test_a_static_tool_finding_cannot_be_dismissed_while_its_line_is_still_there
 
     assert attempt.reason == "dismissal_refused" and not attempt.patch_applied
     assert "bandit still flags this exact line" in attempt.notes
+
+
+def test_a_low_severity_static_finding_can_be_dismissed(repo, monkeypatch):
+    # e.g. bandit B311 (random) in an evaluation script: a genuine false positive.
+    monkeypatch.setattr(fixer, "chat", scripted_chat(["NO_FIX_NEEDED: random only shuffles test data."]))
+    finding = eval_finding()
+    finding.severity = Severity.LOW
+    finding.source_tool, finding.rule, finding.line_text = "bandit", "B311", "result = eval(data)"
+    assert fixer.apply_fix(str(repo), finding).reason == "dismissed"

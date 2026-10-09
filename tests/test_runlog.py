@@ -122,3 +122,15 @@ def test_audit_only_run_writes_a_log_and_a_summary(vuln_repo, no_llm_review):
     assert summary["findings_by_source"]["bandit"]["first"] >= 5
     assert ("run_summary", summary) in events
     assert summary["log_path"].startswith(config.REPORTS_DIR)
+
+
+
+def test_hard_coded_passwords_are_at_least_medium(vuln_repo, no_llm_review):
+    report = auditor.run_audit(str(vuln_repo))
+    b105 = next(f for f in report.findings if f.rule == "B105")
+    assert b105.severity.value == "medium"  # bandit says LOW; a committed password isn't
+
+
+def test_by_default_everything_is_attempted_most_severe_first():
+    from src import config
+    assert config.FIXER_MIN_SEVERITY == "low"

@@ -91,6 +91,9 @@ _BANDIT_RESOLUTIONS = {
     "request_with_no_cert_validation": "Remove verify=False and let TLS certificates be validated normally.",
 }
 
+# bandit rates hard-coded passwords LOW; for a real repo they aren't.
+_SECRET_RULES = {"b105", "b106", "b107"}
+
 _SEVERITY_PREFIX = {
     Category.SECURITY: "SEC",
     Category.API: "API",
@@ -339,9 +342,12 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
                 or _BANDIT_RESOLUTIONS.get(test_id)
                 or f"Review and remediate per Bandit's guidance for {issue.get('test_id', 'this check')}."
             )
+            severity = sev_map.get(issue.get("issue_severity", "LOW"), Severity.LOW)
+            if test_id in _SECRET_RULES and severity == Severity.LOW:
+                severity = Severity.MEDIUM  # a committed credential is never "low"
             collector.add(
                 Category.SECURITY,
-                sev_map.get(issue.get("issue_severity", "LOW"), Severity.LOW),
+                severity,
                 issue.get("issue_text", ""),
                 file=issue.get("filename"), line=issue.get("line_number"),
                 source_tool="bandit", title=issue.get("test_name", "Bandit finding"),
@@ -398,13 +404,14 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
                     f"{dep.get('name', '')} {dep.get('version', '')}.",
                     source_tool="pip-audit",
                     rule=f"{dep.get('name', '')}:{vuln.get('id', '')}",
-                    file=deterministic.REQUIREMENTS if pin else None,
+                    file=deterministic.REQUIREMENTS if requirements else None,
                     line=pin[0] if pin else None,
-                    # A pin bump fixes it without the LLM (see agents/deterministic.py).
+                    # A version bump (or an added minimum for a sub-dependency)
+                    # fixes it without the LLM (see agents/deterministic.py).
                     autofix={
                         "tool": "pin", "package": dep.get("name"), "version": dep.get("version"),
                         "fix_versions": fix_versions,
-                    } if pin and fix_versions else None,
+                    } if requirements and fix_versions else None,
                     title=f"{dep.get('name', 'dependency')} {dep.get('version', '')}: "
                     f"{vuln.get('id', 'vulnerability')}",
                     resolution=resolution,

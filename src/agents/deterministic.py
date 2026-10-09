@@ -39,11 +39,17 @@ def _normalise(name: str) -> str:
 def _pin_pattern(package: str) -> re.Pattern:
     # PEP 503 names: '-', '_' and '.' are interchangeable, case-insensitive.
     name = r"[-_.]+".join(re.escape(part) for part in re.split(r"[-_.]+", package))
-    return re.compile(rf"^(\s*{name}\s*(?:\[[^\]]*\])?\s*==\s*)([^\s;#,]+)", re.IGNORECASE)
+    return re.compile(rf"^(\s*{name}\s*(?:\[[^\]]*\])?\s*(?:==|>=|~=)\s*)([^\s;#,]+)", re.IGNORECASE)
+
+
+def _any_line_pattern(package: str) -> re.Pattern:
+    """The package listed at all (pinned, ranged or bare)."""
+    name = r"[-_.]+".join(re.escape(part) for part in re.split(r"[-_.]+", package))
+    return re.compile(rf"^\s*{name}\s*(?:\[[^\]]*\])?\s*(?:[<>=!~;#]|$)", re.IGNORECASE)
 
 
 def find_pin(requirements: str, package: str) -> Optional[tuple[int, str]]:
-    """(1-based line number, pinned version) of `package==x` in a requirements file."""
+    """(1-based line number, version) of `package==x`, `>=x` or `~=x` in a requirements file."""
     pattern = _pin_pattern(package)
     for n, line in enumerate(requirements.splitlines(), 1):
         m = pattern.match(line)
@@ -123,18 +129,33 @@ def _bump_pins(repo_path: str, findings: list[Finding], on_event: EventCallback)
         package = group[0].autofix["package"]
         pin = find_pin(text, package)
         if not pin:
-            notes = f"{package} isn't pinned with == in {REQUIREMENTS}; update it by hand."
-            results += [(f, _skipped(f, "not_pinned", notes)) for f in group]
+            listed = any(_any_line_pattern(package).match(line) for line in lines)
+            target = _lowest_fix(group, group[0].autofix.get("version") or "0")
+            if listed or not target:
+                why = "is listed without a version to raise" if listed else "has no released fix"
+                notes = f"{package} {why} in {REQUIREMENTS}; update it by hand."
+                results += [(f, _skipped(f, "not_pinned", notes)) for f in group]
+                continue
+            # A vulnerable sub-dependency: add a minimum version for it.
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            ids = ", ".join(f.rule.split(":", 1)[-1] for f in group if f.rule)
+            lines.append(f"{package}>={target}  # added by ZweiGeeks: fixes {ids}\n")
+            notes = f"Added {package}>={target} to {REQUIREMENTS} (sub-dependency; fixes {len(group)} advisories)."
+            _emit(on_event, "deterministic_fix", {"tool": "pin", "file": REQUIREMENTS, "detail": notes})
+            results += [(f, _applied(f, REQUIREMENTS, notes, 0.0)) for f in group]
             continue
         line_no, current = pin
-        target = _lowest_fix(group, current)
+        # Compare against the version pip-audit actually resolved (for a
+        # `>=` range that's not the number written in the file).
+        target = _lowest_fix(group, group[0].autofix.get("version") or current)
         if not target:
             notes = f"No released {package} version fixes every advisory; review them by hand."
             results += [(f, _skipped(f, "no_fixed_version", notes)) for f in group]
             continue
         old = lines[line_no - 1]
         lines[line_no - 1] = _pin_pattern(package).sub(lambda m: m.group(1) + target, old, count=1)
-        notes = f"Pinned {package} {current} -> {target} in {REQUIREMENTS} (fixes {len(group)} advisories)."
+        notes = f"Raised {package} {current} -> {target} in {REQUIREMENTS} (fixes {len(group)} advisories)."
         _emit(on_event, "deterministic_fix", {"tool": "pin", "file": REQUIREMENTS, "detail": notes})
         took = round(time.monotonic() - started, 2)
         results += [(f, _applied(f, REQUIREMENTS, notes, took)) for f in group]

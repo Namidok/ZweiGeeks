@@ -424,13 +424,38 @@ def run_pipeline(
     return final_state
 
 
+def _read_bytes(repo_path: str, rel: str) -> Optional[bytes]:
+    try:
+        return (Path(repo_path) / rel).read_bytes()
+    except OSError:
+        return None
+
+
+def _own_diff(repo_path: str, files: list[str], before: dict) -> str:
+    """Diff of ZweiGeeks' edits only: against HEAD for files the user hadn't
+    touched, against the user's own version for files they had."""
+    import difflib
+    clean = [f for f in files if f not in before]
+    parts = [git_utils.diff_of(repo_path, clean)] if clean else []
+    for f in files:
+        if f in before:
+            old = (before[f] or b"").decode("utf-8", "replace").splitlines(keepends=True)
+            new = (_read_bytes(repo_path, f) or b"").decode("utf-8", "replace").splitlines(keepends=True)
+            parts.append("".join(difflib.unified_diff(old, new, f"a/{f}", f"b/{f}")))
+    return "".join(parts)
+
+
 def _run_in_place(repo, repo_path: str, max_iterations: int, on_event: EventCallback) -> AgentState:
     """Edits the repo's working tree directly, like any editor would, and
     leaves everything uncommitted: no branch, no staging, no commit. Files
     with the user's own uncommitted changes are never edited, so `git diff`
     afterwards shows only what ZweiGeeks changed - review it in Source
     Control, keep it by committing, undo it with `git checkout -- <file>`."""
-    protected = frozenset(git_utils.user_modified_files(repo_path))
+    dirty = git_utils.user_modified_files(repo_path)
+    protected = frozenset(dirty) if config.PROTECT_DIRTY_FILES else frozenset()
+    # What the user's changed files looked like before the run, so the
+    # summary and fixes.patch show only ZweiGeeks' own edits.
+    before = {f: _read_bytes(repo_path, f) for f in dirty}
     runlog = RunLog(repo_path, "fix")
     initial_state: AgentState = {
         "repo_path": repo_path,
@@ -453,14 +478,17 @@ def _run_in_place(repo, repo_path: str, max_iterations: int, on_event: EventCall
             final_state = graph.invoke(initial_state, config={"recursion_limit": max_iterations * 3 + 5})
     finally:
         # Also on errors and Ctrl+C: whatever was fixed so far stays in the files.
-        changed = sorted(set(git_utils.changed_files(repo_path)) - protected)
+        changed = [
+            f for f in sorted(set(git_utils.changed_files(repo_path)) - protected)
+            if f not in before or _read_bytes(repo_path, f) != before[f]
+        ]
         skipped = []
         if final_state:
             skipped = [
                 {"file": f, "reason": "you have uncommitted changes in this file"}
                 for f in sorted(final_state.get("left_alone") or [])
             ]
-        diff = git_utils.diff_of(repo_path, changed)
+        diff = _own_diff(repo_path, changed, before)
         patch = None
         if changed:
             runlog.dir.mkdir(parents=True, exist_ok=True)
