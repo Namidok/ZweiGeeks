@@ -242,7 +242,10 @@ def run_pytest(test_dir: Path, repo: Path, work: Path, select: Optional[list[str
     targets = [str(Path(test_dir) / s) for s in select] if select else [str(test_dir)]
     cmd = [
         sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--import-mode=importlib",
-        "-c", str(ini), "--rootdir", str(work), f"--junitxml={junit}", *targets,
+        "-c", str(ini), "--rootdir", str(work), f"--junitxml={junit}",
+        # Only the case's own conftest files: never one from a folder above it
+        # (ZweiGeeks' tests/conftest.py, for a case kept under tests/).
+        "--confcutdir", str(test_dir), *targets,
     ]
     env = {**os.environ, "PYTHONPATH": str(repo), "PYTHONDONTWRITEBYTECODE": "1"}
     try:

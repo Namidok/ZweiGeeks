@@ -1,0 +1,10 @@
+{
+  "tier": "A",
+  "description": "End-to-end test case: one bug ruff fixes on its own, one logic bug only the (mocked) model finds.",
+  "bugs": [
+    {"id": "t1-unused-import", "file": "calc.py", "line_text": "import os", "category": "quality", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "calc.py", "pattern": "^import os$"}},
+    {"id": "t1-average-denominator", "file": "calc.py", "line_text": "return sum(values) / (len(values) + 1)", "category": "logic", "tier": "A",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_calc_bugs.py::test_average_of_two_numbers"}}
+  ]
+}

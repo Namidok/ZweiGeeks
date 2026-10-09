@@ -66,6 +66,10 @@ def write(repo: Path, rel: str, content: str = "") -> Path:
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+# Fixtures are code for the agents (and benchmark cases with their own test
+# files, run by bench/ against a copy), never part of this suite.
+collect_ignore_glob = ["fixtures/*"]
+
 
 @pytest.fixture
 def vuln_repo(git_repo):
