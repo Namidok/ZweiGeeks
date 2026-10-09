@@ -350,6 +350,50 @@ FIXER_MODEL=qwen2.5-coder:14b VERIFIER_MODEL=qwen3:8b python -m src.cli ...
 Compare the printed summaries (applied fixes, rejections by reason, time).
 No larger model has been measured here yet, so there are no numbers for one.
 
+## Benchmark
+
+`bench/` measures how well ZweiGeeks finds and fixes planted bugs. It needs
+Ollama running, like the app:
+
+```bash
+python -m bench.run                      # every case, 3 repeats
+python -m bench.run --cases a1,b2 --repeats 1 --passes 3
+python -m bench.run --fixer-model qwen2.5-coder:14b   # also --auditor-model, --verifier-model
+```
+
+Each case and repeat runs in its own process, on fresh git copies of the
+case: first a read-only audit (detection), then the full audit -> fix loop
+(fixing). Repeat *i* uses `OLLAMA_SEED` + *i*, and each repeat has its own
+review cache. Results go to `bench/results/<timestamp>.json` (every run's raw
+data) and `<timestamp>.md` (tables per tier, mean and min-max across
+repeats); existing results are never overwritten.
+
+Metrics are always split by source, static tools vs the LLM review, and
+never added together:
+
+| Metric | Meaning |
+|---|---|
+| Recall | planted bugs a source's findings matched / planted bugs. A finding matches a bug in the same file whose flagged line is the buggy line, or within 3 lines of it. |
+| False alarms per file | findings on the clean control cases / their files (every finding there is a false alarm) |
+| Fix rate | bugs whose fix check passes after the run / planted bugs, credited to the source of the finding the applied edit fixed ("other": fixed with no edit aimed at it) |
+| Regression rate | behaviour tests that passed before the run and fail after it / behaviour tests |
+| Cost per fixed bug | fix attempts per fixed bug (by source); model calls and seconds of the fix run per fixed bug |
+
+Cases live in `bench/cases/<id>/`: tier A has issues static tools can see,
+tier B logic bugs no tool flags, tier C clean controls with no bugs.
+
+```
+repo/              the project with the planted bugs (copied, git-initialised per run)
+truth.json         {"tier", "bugs": [{"id", "file", "line_text", "category", "tier", "fix_check"}]}
+behaviour_tests/   pass on the unmodified repo; the referee for "did a fix break something"
+bug_tests/         optional; fail on the unmodified repo, one per logic bug
+```
+
+`fix_check` is `{"type": "absent_regex", "file", "pattern"}` (the pattern must
+be gone) or `{"type": "test_passes", "path": "bug_tests/test_x.py::test_name"}`.
+`tests/test_bench.py` checks every case is valid: behaviour tests pass, bug
+tests fail and every pattern is present on the unmodified repo.
+
 ## Tests
 
 ```bash
@@ -416,5 +460,6 @@ static/
   app.js              job form, activity log, report dialog
   office.js           pixel-art office scene (canvas, no assets)
   style.css
+bench/                benchmark: cases, harness (python -m bench.run), results
 tests/                pytest suite (no LLM required)
 ```
