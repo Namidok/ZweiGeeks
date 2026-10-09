@@ -62,7 +62,7 @@ def _emit(cb: EventCallback, event: str, payload: dict) -> None:
 
 # Rejections that come from the file itself, not from what the model wrote:
 # retrying them on an unchanged file can't turn out differently.
-_NOT_RETRYABLE = {"no_file", "file_missing", "file_too_large"}
+_NOT_RETRYABLE = {"no_file", "file_missing", "file_too_large", "dismissed"}
 
 
 def _file_hash(repo_path: str, rel: Optional[str]) -> Optional[str]:
@@ -123,7 +123,10 @@ def _plan(state: "AgentState") -> list[Finding]:
             if past["last_reason"] in _NOT_RETRYABLE and past["file_hash"] == _file_hash(
                 state["repo_path"], finding.file
             ):
-                finding.needs_manual_fix = True
+                if past["last_reason"] == "dismissed":
+                    finding.dismissed = True
+                else:
+                    finding.needs_manual_fix = True
                 finding.fix_notes = past["last_notes"]
                 continue
         todo.append(finding)
@@ -254,6 +257,9 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
                         edited.add(attempt.file)
                         _relocate(state["repo_path"], todo, {attempt.file})
                     break
+                if attempt.reason == "dismissed":
+                    finding.dismissed = True
+                    finding.fix_notes = attempt.notes
                 if attempt.reason in _NOT_RETRYABLE or attempt.reason == "ollama_unreachable":
                     break
 

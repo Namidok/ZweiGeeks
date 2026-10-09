@@ -53,7 +53,10 @@ class RunLog:
 
     def audit(self, pass_no: int, report: AuditReport) -> None:
         by_source = Counter(f.source_tool for f in report.findings)
-        self._audits.append({"pass": pass_no, "by_source": dict(by_source), "cache_hits": report.review_cache_hits})
+        self._audits.append({
+            "pass": pass_no, "by_source": dict(by_source), "cache_hits": report.review_cache_hits,
+            "speculative": report.speculative_dropped,
+        })
         self.write(
             "audit", pass_no=pass_no, findings=len(report.findings), by_source=dict(by_source),
             incomplete=report.audit_incomplete, review_cache_hits=report.review_cache_hits,
@@ -91,7 +94,10 @@ class RunLog:
         last = self._audits[-1]["by_source"] if self._audits else {}
         sources = sorted(set(first) | set(last))
         applied = Counter(a["kind"] for a in self._attempts if a["applied"])
-        rejections = Counter(a["reason"] or "unknown" for a in self._attempts if not a["applied"])
+        rejections = Counter(
+            a["reason"] or "unknown" for a in self._attempts if not a["applied"] and a["reason"] != "dismissed"
+        )
+        dismissed = sum(1 for a in self._attempts if a["reason"] == "dismissed")
         llm = {role: {**v, "seconds": round(v["seconds"], 1)} for role, v in sorted(self._llm.items())}
         summary = {
             "run_id": self.run_id,
@@ -103,6 +109,8 @@ class RunLog:
             "fix_passes": len({a["pass_no"] for a in self._attempts}),
             "fix_attempts": len(self._attempts),
             "review_cache_hits": sum(a.get("cache_hits", 0) for a in self._audits),
+            "dismissed": dismissed,
+            "speculative_dropped": sum(a.get("speculative", 0) for a in self._audits),
             "needs_manual_fix": sum(1 for f in (report.findings if report else []) if f.needs_manual_fix),
             "fixes_applied": {"llm": applied.get("llm", 0), "deterministic": applied.get("deterministic", 0)},
             "rejections_by_reason": dict(rejections.most_common()),
@@ -126,7 +134,8 @@ def format_summary(s: dict) -> str:
         f"ZweiGeeks run {s['run_id']}  ({s['mode']}, stop: {s['stop_reason']}, {s['wall_time_s']}s)",
         f"Audits: {s['audits']}   Fix passes: {s['fix_passes']}   Fix attempts: {s['fix_attempts']}   "
         f"Applied: {s['fixes_applied']['llm']} LLM + {s['fixes_applied']['deterministic']} deterministic",
-        f"Needs manual fix: {s.get('needs_manual_fix', 0)}   Review cache hits: {s.get('review_cache_hits', 0)}",
+        f"Needs manual fix: {s.get('needs_manual_fix', 0)}   Dismissed as false positives: {s.get('dismissed', 0)}   "
+        f"Speculative findings dropped: {s.get('speculative_dropped', 0)}   Review cache hits: {s.get('review_cache_hits', 0)}",
         "",
         f"{'Findings by source':<26}{'first':>7}{'last':>7}",
     ]

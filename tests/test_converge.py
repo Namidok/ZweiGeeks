@@ -200,3 +200,44 @@ def test_improvements_are_generated_once_per_run(tmp_path, monkeypatch):
 
     assert seen == [True, False]
     assert final["report"].improvements == ["add CI"]  # carried over to the final report
+
+
+def test_a_dismissed_finding_is_not_retried_and_is_marked(tmp_path, monkeypatch):
+    write(tmp_path, "handler.py", HANDLER)
+    calls = []
+
+    def fake_chat(model, messages, options=None, timeout=None):
+        calls.append(1)
+        return ollama_reply("NO_FIX_NEEDED: the input is never evaluated.")
+
+    monkeypatch.setattr(fixer, "chat", fake_chat)
+
+    final, events, _ = run_graph(tmp_path, [lambda: AuditReport(findings=[eval_finding()])])
+
+    assert len(calls) == 1  # dismissed once, never retried
+    finding = final["report"].findings[0]
+    assert finding.dismissed and not finding.needs_manual_fix
+    assert [a.reason for a in final["fix_attempts"]] == ["dismissed"]
+    assert any(e == "fix_dismissed" for e, _ in events)
+
+
+def test_speculative_llm_findings_are_dropped(vuln_repo, monkeypatch):
+    # Verbatim from the bmw_case_study run: findings that say there's no evidence.
+    items = [
+        {"category": "security", "severity": "medium", "line": 23, "title": "Potential SQL injection risk",
+         "detail": "The code does not show any evidence of SQL queries, but if the `KnowledgeBase` class uses SQL in its `chroma_collection.query` method, this could be a risk."},
+        {"category": "security", "severity": "medium", "line": 23, "title": "Potential XSS risk",
+         "detail": "The code does not show any evidence of user input being rendered in a web context, but if the `KnowledgeBase` class outputs user input, this could be a risk."},
+        {"category": "security", "severity": "high", "line": 22, "title": "Command injection via shell=True",
+         "detail": "archive_logs concatenates `directory` into a shell command run with shell=True."},
+    ]
+    monkeypatch.setattr(auditor, "_review_file_with_llm", lambda *a, **k: [dict(i) for i in items])
+    monkeypatch.setattr(auditor, "_generate_improvements", lambda *a, **k: [])
+    monkeypatch.setattr(auditor.security, "run_pip_audit", lambda repo: ([], "offline"))
+
+    report = auditor.run_audit(str(vuln_repo))
+
+    llm = [f.title for f in report.findings if f.source_tool == "llm-review"]
+    assert llm == ["Command injection via shell=True"] * 2  # one per reviewed file, the real one only
+    assert report.speculative_dropped == 4  # 2 speculative items x 2 files
+    assert "hypotheticals" in auditor.FILE_REVIEW_SYSTEM_PROMPT

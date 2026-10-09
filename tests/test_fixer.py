@@ -406,3 +406,78 @@ def test_verifier_model_is_configurable_and_defaults_to_the_auditors(monkeypatch
 
     assert fixer.apply_fix(str(repo), eval_finding()).patch_applied is True
     assert models == [(False, "fixer-m"), (True, "verifier-m")]
+
+
+# --- from the bmw_case_study run: os.getenv without import, "no changes needed",
+# --- and a verifier-approved edit that commented out sys.path.insert --------------
+
+def edit(search, replace):
+    return f"<<<<<<< SEARCH\n{search}\n=======\n{replace}\n>>>>>>> REPLACE"
+
+
+def test_missing_stdlib_import_is_added_instead_of_rejecting_the_fix(repo, monkeypatch):
+    uses_os = edit("    result = eval(data)", "    result = ast.literal_eval(os.getenv('Q', data))")
+    monkeypatch.setattr(fixer, "chat", scripted_chat([uses_os]))
+
+    attempt = fixer.apply_fix(str(repo), eval_finding())
+
+    assert attempt.patch_applied is True and "added import os" in attempt.notes
+    lines = (repo / "handler.py").read_text().splitlines()
+    assert lines[:2] == ["import ast", "import os"]  # right after the existing imports
+
+
+@pytest.mark.parametrize("replacement", [
+    "    result = requests.get(data)",          # not stdlib: still rejected
+    "    result = ast.literal_eval(time)",       # stdlib name, but not used as a module
+])
+def test_only_stdlib_modules_used_as_modules_are_auto_imported(repo, monkeypatch, replacement):
+    monkeypatch.setattr(fixer, "chat", scripted_chat([edit("    result = eval(data)", replacement)]))
+
+    attempt = fixer.apply_fix(str(repo), eval_finding())
+
+    assert attempt.patch_applied is False and attempt.reason == "undefined_name"
+    assert (repo / "handler.py").read_text() == HANDLER
+
+
+@pytest.mark.parametrize("reply", [
+    "NO_FIX_NEEDED: the file never builds an SQL query.",
+    "No changes needed. The code does not appear to use any direct SQL queries, so there is no risk of SQL injection in this file.",
+])
+def test_no_fix_needed_is_a_dismissal_not_a_rejection(repo, monkeypatch, reply):
+    chat = scripted_chat([reply, reply])
+    monkeypatch.setattr(fixer, "chat", chat)
+
+    attempt = fixer.apply_fix(str(repo), eval_finding())
+
+    assert attempt.reason == "dismissed" and not attempt.patch_applied
+    assert "likely a false positive" in attempt.notes
+    assert len(fix_calls(chat)) == 1  # no "send the edit blocks again" retry
+    assert (repo / "handler.py").read_text() == HANDLER
+
+
+def test_commenting_out_working_code_is_rejected(tmp_path, monkeypatch):
+    script = "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\nimport app\n"
+    write(tmp_path, "evaluate.py", script)
+    disable = edit(
+        "sys.path.insert(0, str(Path(__file__).parent))",
+        "# Avoid manipulating the system path\n# sys.path.insert(0, str(Path(__file__).parent))",
+    )
+    monkeypatch.setattr(fixer, "chat", scripted_chat([disable]))
+    finding = eval_finding(file="evaluate.py", line=3)
+
+    attempt = fixer.apply_fix(str(tmp_path), finding)
+
+    assert attempt.reason == "commented_out_code" and not attempt.patch_applied
+    assert (tmp_path / "evaluate.py").read_text() == script
+
+
+def test_adding_a_comment_next_to_a_real_change_is_fine(repo, monkeypatch):
+    commented_fix = edit("    result = eval(data)", "    # literal_eval only accepts Python literals\n    result = ast.literal_eval(data)")
+    monkeypatch.setattr(fixer, "chat", scripted_chat([commented_fix]))
+    assert fixer.apply_fix(str(repo), eval_finding()).patch_applied is True
+
+
+def test_prompts_carry_the_new_rules():
+    assert "NO_FIX_NEEDED" in fixer.FIX_SYSTEM_PROMPT
+    assert "commenting out" in fixer.FIX_SYSTEM_PROMPT.lower()
+    assert "Commenting out or deleting a working line" in fixer.VERIFY_SYSTEM_PROMPT

@@ -49,6 +49,9 @@ class Finding(BaseModel):
     )
     fixed: bool = False
     fix_notes: Optional[str] = None
+    dismissed: bool = Field(
+        default=False, description="The Fixer looked and found nothing to fix: most likely a false positive."
+    )
     needs_manual_fix: bool = Field(
         default=False, description="The Fixer gave up on it (out of attempts, or nothing it can change)."
     )
@@ -75,6 +78,9 @@ class AuditReport(BaseModel):
     improvements: list[str] = Field(
         default_factory=list,
         description="Broader, strategic suggestions - not tied to a single finding.",
+    )
+    speculative_dropped: int = Field(
+        default=0, description="LLM findings dropped because they said the file shows no sign of the issue."
     )
     review_cache_hits: int = Field(
         default=0, description="Files whose LLM review came from the cache (unchanged since last reviewed)."
@@ -112,6 +118,7 @@ class AuditReport(BaseModel):
             if f.file
             and f.source_tool not in _NOT_LLM_FIXABLE
             and not f.needs_manual_fix
+            and not f.dismissed
             and _SEVERITY_RANK[f.severity] >= floor
         ]
         return sorted(fixable, key=lambda f: (

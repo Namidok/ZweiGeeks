@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -58,7 +59,10 @@ state-changing logic, unsafe file handling, inconsistent output escaping, loggin
 sensitive data, and any other real bug you can see with evidence in this file.
 
 Only report things you can see evidence for IN THIS FILE - don't guess about other files \
-you haven't seen. If there's nothing worth flagging, return an empty array.
+you haven't seen. Every finding must point at a line whose code is wrong as written. Do \
+NOT report hypotheticals ("if the X class uses SQL...", "could be a risk if...") or \
+issues you say the file doesn't show. A test or evaluation script reading its own data \
+files is not an attack surface. If there's nothing worth flagging, return an empty array.
 
 Output ONLY a JSON array, nothing else:
 [{"category": "security|api|ui|testing|quality", "severity": "critical|high|medium|low|info", \
@@ -506,6 +510,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
     last_error_timed_out = False
     incomplete_reason: Optional[str] = None
     cache_hits = 0
+    speculative = 0
     for f in files:
         rel = str(f.relative_to(repo_path))
         items = _cached_review(f, Path(repo_path), config.AUDITOR_MODEL)
@@ -513,7 +518,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
         if items is not None:
             cache_hits += 1
             files_reviewed += 1
-            _collect_llm_items(collector, items)
+            speculative += _collect_llm_items(collector, items)
             continue
         try:
             items = _review_file_with_llm(
@@ -547,7 +552,7 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
             _emit(on_event, "file_review_unparseable", {"file": rel})
             continue
         files_reviewed += 1
-        _collect_llm_items(collector, items)
+        speculative += _collect_llm_items(collector, items)
     if files and files_reviewed == 0 and incomplete_reason is None:
         if files_errored == files_failed:
             # Every file hit an Ollama error - name that, not just "nothing reviewed".
@@ -570,13 +575,33 @@ def run_audit(repo_path: str, on_event: EventCallback = None, improvements: bool
         raw_tool_output=raw_outputs,
         improvements=suggestions,
         review_cache_hits=cache_hits,
+        speculative_dropped=speculative,
         audit_incomplete=incomplete_reason is not None,
         incomplete_reason=incomplete_reason,
     )
 
 
-def _collect_llm_items(collector: _FindingCollector, items: list[dict]) -> None:
+# A 7B reviewer often files a finding and then says, in the same breath,
+# that the file shows no sign of it. Those are dropped, not sent to the Fixer.
+_SPECULATIVE = re.compile(
+    r"\b(does not|doesn't|do not|don't) (show|contain|appear to|include|use)\b"
+    r"|\bno (evidence|sign)\b|\bnot (shown|visible) in\b"
+    r"|\bif the `?\w+`? (class|function|method|module|code|library) (uses|handles|outputs|calls|executes|is)\b",
+    re.IGNORECASE,
+)
+
+
+def _speculative(item: dict) -> bool:
+    return bool(_SPECULATIVE.search(f"{item.get('title', '')} {item.get('detail', '')}"))
+
+
+def _collect_llm_items(collector: _FindingCollector, items: list[dict]) -> int:
+    """Adds the review's findings; returns how many speculative ones it dropped."""
+    dropped = 0
     for item in items:
+        if not isinstance(item, dict) or _speculative(item):
+            dropped += isinstance(item, dict)
+            continue
         try:
             collector.add(
                 Category(item.get("category", "quality")),
@@ -588,6 +613,7 @@ def _collect_llm_items(collector: _FindingCollector, items: list[dict]) -> None:
             )
         except (ValueError, TypeError, AttributeError):
             continue
+    return dropped
 
 
 def _generate_improvements(findings: list[Finding], stack: list[str]) -> list[str]:

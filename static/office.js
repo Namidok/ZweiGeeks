@@ -653,6 +653,9 @@
         scene.board.fixed += 1;
         say(F, `${p.finding_id} fixed`, "✅");
         break;
+      case "fix_dismissed":
+        say(F, `${p.finding_id}: false alarm`, "🙅");
+        break;
       case "fix_rejected":
         say(F, `${p.finding_id} rejected`, "❌");
         break;

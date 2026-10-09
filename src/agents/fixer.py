@@ -58,6 +58,13 @@ Each SEARCH must be consecutive lines copied exactly from the file - including a
 comment or blank lines between them - and must match exactly one place. Include a \
 couple of surrounding lines if needed to make it unique. To delete lines, leave the \
 part after ======= empty.
+
+Never "fix" something by commenting out or deleting working code. If your fix uses a \
+module the file doesn't import yet, add the import in its own edit block.
+
+If the issue is not real in this file (the code shown doesn't actually have it), reply \
+with exactly one line instead of edit blocks:
+NO_FIX_NEEDED: <one sentence saying why>
 """
 
 
@@ -71,8 +78,10 @@ only reformats, renames, or touches unrelated lines is NOT a fix.
 2. preserves_behavior: apart from fixing the issue, does the file still do everything \
 it did before? Look at every removed or changed line: if it built data that is still \
 used, performed a check or validation, or was part of a feature, and the new code no \
-longer does that, answer false. Removing or redacting the sensitive output, logging, \
-or data that the issue itself is about IS the fix - that alone never makes this false.
+longer does that, answer false. Commenting out or deleting a working line (an import, \
+a call, a sys.path change, a return) instead of changing it is NOT preserving behavior: \
+answer false. Removing or redacting the sensitive output, logging, or data that the \
+issue itself is about IS the fix - that alone never makes this false.
 
 Output ONLY a JSON object, no markdown fence, no commentary:
 {"resolved": true or false, "preserves_behavior": true or false, "reason": "one short sentence"}
@@ -610,6 +619,71 @@ def _new_undefined_names(rel_path: Optional[str], original: str, new_content: st
     return sorted(set(after) - set(before))
 
 
+_DISMISS_MARKER = re.compile(r"^\s*NO_FIX_NEEDED\s*:?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_DISMISS_PHRASES = re.compile(
+    r"\bno (code )?changes? (are |is )?(needed|required|necessary)\b"
+    r"|\bno (fix|edit)s? (is |are )?(needed|required|necessary)\b"
+    r"|\bnothing (needs|to) (to be )?(fix|change)",
+    re.IGNORECASE,
+)
+
+
+def _dismissal(reply: str) -> Optional[str]:
+    """The model's reason when it says the issue isn't real, else None."""
+    m = _DISMISS_MARKER.search(reply)
+    if m:
+        return (m.group(1).strip() or "the model says the issue isn't present")[:240]
+    text = " ".join(reply.split())
+    if _DISMISS_PHRASES.search(text):
+        return text[:240]
+    return None
+
+
+_COMMENT = re.compile(r"^\s*(#|//|--|/\*|\*|;)\s?")
+
+
+def _commented_out_code(original: str, new_content: str) -> list[str]:
+    """Working lines the edit turned into comments: `x()` -> `# x()`. That
+    switches code off rather than fixing it (one real case: commenting out a
+    script's sys.path.insert broke every import after it)."""
+    new_comments = {
+        _COMMENT.sub("", line, count=1).strip()
+        for line in new_content.split("\n") if _COMMENT.match(line)
+    }
+    hits = []
+    for line in _removed_lines(original, new_content):
+        code = line.strip()
+        if code and not _COMMENT.match(line) and len(code) > 3 and code in new_comments:
+            hits.append(code)
+    return hits
+
+
+def _add_stdlib_imports(source: str, names: list[str]) -> Optional[str]:
+    """`source` with `import <name>` added for each name, if every name is a
+    standard-library module the code uses as a module (`os.getenv`); else
+    None. The import goes after the existing top-of-file imports."""
+    stdlib = getattr(sys, "stdlib_module_names", frozenset())
+    if not names or any(n not in stdlib or not re.search(rf"\b{re.escape(n)}\.\w", source) for n in names):
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    insert_at = 0  # line index after which to insert
+    for node in tree.body:
+        is_docstring = (
+            node is tree.body[0] and isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant) and isinstance(node.value.value, str)
+        )
+        if isinstance(node, (ast.Import, ast.ImportFrom)) or is_docstring:
+            insert_at = node.end_lineno
+        else:
+            break
+    lines = source.split("\n")
+    new = [f"import {n}" for n in sorted(names)]
+    return "\n".join(lines[:insert_at] + new + lines[insert_at:])
+
+
 def _module_name(rel_path: str) -> Optional[str]:
     parts = list(Path(rel_path).with_suffix("").parts)
     if parts and parts[-1] == "__init__":
@@ -785,6 +859,16 @@ def _apply_fix(
         reply = extract_content(response)
         messages.append({"role": "assistant", "content": reply})
         edits = _parse_edits(reply)
+        if not edits:
+            dismissal = _dismissal(reply)
+            if dismissal:
+                # The model looked and says there's nothing to fix: most likely a
+                # false positive from the review. Retrying won't change that.
+                _emit(on_event, "fix_dismissed", {"finding_id": finding.id, "reason": dismissal})
+                return FixAttempt(
+                    finding_id=finding.id, file=finding.file, patch_applied=False, reason="dismissed",
+                    notes=f"JAX found nothing to fix here (likely a false positive): {dismissal}",
+                )
         if edits:
             new_lf, why = _apply_edits(original_lf, edits, near_line=finding.line)
             reason = "edit_mismatch"
@@ -826,7 +910,26 @@ def _apply_fix(
             f"Rejected: edit deletes existing code ({', '.join(removed)}) instead of fixing it.",
         )
 
+    commented = [] if _is_exposure_finding(finding) else _commented_out_code(original_lf, new_lf)
+    if commented:
+        return _reject(
+            on_event, finding, "commented_out_code",
+            f"Rejected: edit disables working code instead of fixing it (commented out: "
+            f"{commented[0][:80]!r}).",
+        )
+
     undefined_names = _new_undefined_names(finding.file, original_lf, new_lf)
+    added_imports: list[str] = []
+    if undefined_names:
+        # Small models use `os.getenv(...)` and forget `import os`. If every
+        # missing name is a standard-library module used as one, add the
+        # import(s) and check again rather than throw the fix away.
+        repaired = _add_stdlib_imports(new_lf, undefined_names)
+        if repaired is not None and not _new_undefined_names(finding.file, original_lf, repaired):
+            added_imports = undefined_names
+            new_lf = repaired
+            new_content = _match_formatting(original, new_lf)
+            undefined_names = []
     if undefined_names:
         return _reject(
             on_event, finding, "undefined_name",
@@ -892,5 +995,9 @@ def _apply_fix(
         finding_id=finding.id,
         file=finding.file,
         patch_applied=True,
-        notes=f"Edited by fixer agent ({len(edits)} edit block(s)) and verified: {reason}",
+        notes=(
+            f"Edited by fixer agent ({len(edits)} edit block(s))"
+            + (f", added import {', '.join(added_imports)}" if added_imports else "")
+            + f" and verified: {reason}"
+        ),
     )

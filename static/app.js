@@ -74,6 +74,8 @@
     removed_definition: "it deleted existing functions",
     breaks_import: "the module stopped importing, so it was rolled back",
     undefined_name: "it used a name that isn't defined anywhere",
+    commented_out_code: "it commented out working code instead of fixing it",
+    dismissed: "JAX found nothing to fix (likely a false positive)",
     no_file: "the finding has no file to edit",
     file_missing: "the file isn't there any more",
     file_too_large: "the file is too large and the finding has no line to focus on",
@@ -351,6 +353,13 @@
       if (row) row.open = false;
       run.applied += 1;
       fixerStat();
+    },
+
+    fix_dismissed({ finding_id, reason }) {
+      const row = run.fixRows.get(finding_id);
+      const handle = row ? row.handle : logRow("fixer", "neutral", "");
+      handle.set("neutral", `${finding_id}: nothing to fix`, [row && row.file, { prose: `Likely a false positive: ${reason}` }]);
+      if (row) row.open = false;
     },
 
     fix_rejected({ finding_id, reason }) {
@@ -799,6 +808,9 @@
     if (f.fixed) {
       statusText = "Fixed";
       statusClass = "status-fixed";
+    } else if (f.dismissed) {
+      statusText = "Likely false positive";
+      statusClass = "status-open";
     } else if (f.needs_manual_fix) {
       statusText = "Needs manual fix";
       statusClass = "status-human";
