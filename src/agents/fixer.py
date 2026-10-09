@@ -628,6 +628,13 @@ _DISMISS_PHRASES = re.compile(
 )
 
 
+_STATIC_TOOLS = {"bandit", "ruff"}
+
+
+def _line_still_there(text: str, finding: Finding) -> bool:
+    return bool(finding.line_text) and any(line.strip() == finding.line_text for line in text.split("\n"))
+
+
 def _dismissal(reply: str) -> Optional[str]:
     """The model's reason when it says the issue isn't real, else None."""
     m = _DISMISS_MARKER.search(reply)
@@ -861,6 +868,14 @@ def _apply_fix(
         edits = _parse_edits(reply)
         if not edits:
             dismissal = _dismissal(reply)
+            if dismissal and finding.source_tool in _STATIC_TOOLS and _line_still_there(original_lf, finding):
+                # A static tool's finding is a fact about this exact line; the
+                # model saying "nothing to fix" doesn't make it go away.
+                return _reject(
+                    on_event, finding, "dismissal_refused",
+                    f"The model said no fix was needed ({dismissal[:120]}), but {finding.source_tool} "
+                    f"still flags this exact line ({finding.rule}): {finding.line_text!r}. It must be changed.",
+                )
             if dismissal:
                 # The model looked and says there's nothing to fix: most likely a
                 # false positive from the review. Retrying won't change that.

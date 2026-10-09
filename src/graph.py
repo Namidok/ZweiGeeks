@@ -95,6 +95,16 @@ def _relocate(repo_path: str, findings: list[Finding], files: set[str]) -> None:
             finding.line = min(hits, key=lambda n: abs(n - old))
 
 
+def _flagged_line_gone(repo_path: str, finding: Finding) -> bool:
+    if not finding.file or not finding.line_text:
+        return False
+    try:
+        lines = (Path(repo_path) / finding.file).read_text(errors="ignore").splitlines()
+    except OSError:
+        return False
+    return not any(line.strip() == finding.line_text for line in lines)
+
+
 def _plan(state: "AgentState") -> list[Finding]:
     """The findings the next fix pass will attempt, most severe first.
 
@@ -204,6 +214,14 @@ def build_graph(on_event: EventCallback = None, runlog: Optional[RunLog] = None)
         for finding in todo:
             if state["done"]:
                 break
+            if _flagged_line_gone(state["repo_path"], finding):
+                # An earlier fix in this pass already rewrote the flagged line
+                # (e.g. bandit's B608 and the LLM's "SQL injection" on the same
+                # query). Don't ask the model about code that's gone; the next
+                # audit says whether it's really fixed.
+                finding.fix_notes = "The flagged line was changed by an earlier fix; the next audit re-checks it."
+                _emit(on_event, "fix_skipped", {"finding_id": finding.id, "reason": "line_changed"})
+                continue
             key = _key(finding)
             # Retry right away (not next pass): with the no-progress stop, a
             # finding rejected in a pass where nothing else landed would never

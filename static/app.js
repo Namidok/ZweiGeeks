@@ -75,6 +75,7 @@
     breaks_import: "the module stopped importing, so it was rolled back",
     undefined_name: "it used a name that isn't defined anywhere",
     commented_out_code: "it commented out working code instead of fixing it",
+    dismissal_refused: "it said nothing needed fixing, but the static tool still flags the line",
     dismissed: "JAX found nothing to fix (likely a false positive)",
     no_file: "the finding has no file to edit",
     file_missing: "the file isn't there any more",

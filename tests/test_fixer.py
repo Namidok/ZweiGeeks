@@ -481,3 +481,15 @@ def test_prompts_carry_the_new_rules():
     assert "NO_FIX_NEEDED" in fixer.FIX_SYSTEM_PROMPT
     assert "commenting out" in fixer.FIX_SYSTEM_PROMPT.lower()
     assert "Commenting out or deleting a working line" in fixer.VERIFY_SYSTEM_PROMPT
+
+
+def test_a_static_tool_finding_cannot_be_dismissed_while_its_line_is_still_there(repo, monkeypatch):
+    # Real reply from the benchmark: the model talked itself out of a bandit B602.
+    monkeypatch.setattr(fixer, "chat", scripted_chat(["NO_FIX_NEEDED: it appears to be a deliberate example."]))
+    finding = eval_finding()
+    finding.source_tool, finding.rule, finding.line_text = "bandit", "B307", "result = eval(data)"
+
+    attempt = fixer.apply_fix(str(repo), finding)
+
+    assert attempt.reason == "dismissal_refused" and not attempt.patch_applied
+    assert "bandit still flags this exact line" in attempt.notes

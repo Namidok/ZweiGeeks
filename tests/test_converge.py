@@ -241,3 +241,24 @@ def test_speculative_llm_findings_are_dropped(vuln_repo, monkeypatch):
     assert llm == ["Command injection via shell=True"] * 2  # one per reviewed file, the real one only
     assert report.speculative_dropped == 4  # 2 speculative items x 2 files
     assert "hypotheticals" in auditor.FILE_REVIEW_SYSTEM_PROMPT
+
+
+def test_a_finding_whose_line_an_earlier_fix_changed_is_skipped_without_a_model_call(tmp_path, monkeypatch):
+    write(tmp_path, "handler.py", HANDLER)
+    first = eval_finding(id="SEC-001", source_tool="llm-review", title="eval on input")
+    second = eval_finding(id="SEC-002", source_tool="bandit", title="B307")
+    for f in (first, second):
+        f.line_text = "result = eval(data)"
+    calls = []
+
+    def fix(repo_path, f, on_event=None, **_):
+        calls.append(f.id)
+        (tmp_path / "handler.py").write_text(HANDLER.replace("eval(data)", "ast.literal_eval(data)"))
+        return FixAttempt(finding_id=f.id, file=f.file, patch_applied=True, notes="ok")
+
+    monkeypatch.setattr(fixer, "apply_fix", fix)
+
+    final, events, _ = run_graph(tmp_path, [lambda: AuditReport(findings=[first, second]), lambda: AuditReport()])
+
+    assert calls == ["SEC-001"]  # the second one's line no longer exists
+    assert ("fix_skipped", {"finding_id": "SEC-002", "reason": "line_changed"}) in events
