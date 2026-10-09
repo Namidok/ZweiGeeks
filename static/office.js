@@ -8,17 +8,17 @@
 
 (() => {
   const W = 480;
-  const H = 312;
-  const CORRIDOR_Y = 176;
-  const WALK_SPEED = 85; // logical px per second
+  const H = 288;
+  const CORRIDOR_Y = 190;
+  const WALK_SPEED = 75; // logical px per second
   const BUBBLE_MS = 12000;
 
   const C = {
-    bg: "#110f2b",
-    floorA: "#25214a",
-    floorB: "#2b2756",
-    wall: "#1b1840",
-    wallTrim: "#3f3a85",
+    bg: "#1a1a2e",
+    floorA: "#2a2a3c",
+    floorB: "#2e2e42",
+    wall: "#20203a",
+    wallTrim: "#3a3a60",
     wood: "#6d4c2e",
     woodLight: "#8a6440",
     woodDark: "#4b331f",
@@ -28,10 +28,10 @@
     chair: "#44446a",
     paper: "#eef0f4",
     paperEdge: "#aab4be",
-    auditor: "#b266ff",
-    auditorDark: "#2e1760",
-    fixer: "#3dff93",
-    fixerDark: "#0d4a2a",
+    auditor: "#8c7cf6",
+    auditorDark: "#2b2463",
+    fixer: "#2ec4a0",
+    fixerDark: "#0f3d33",
     led: "#55efc4",
     ledBusy: "#fdcb6e",
     ledOff: "#33404a",
@@ -40,14 +40,14 @@
   };
 
   const SPOTS = {
-    auditorSeat: { x: 90, y: 126, face: "up" },
-    auditorIdle: { x: 152, y: 156, face: "down" },
-    fixerSeat: { x: 390, y: 126, face: "up" },
-    fixerIdle: { x: 328, y: 156, face: "down" },
-    tableLeft: { x: 198, y: 142, face: "down" },
-    tableRight: { x: 282, y: 142, face: "down" },
-    rack: { x: 238, y: 184, face: "down" },
-    printer: { x: 50, y: 202, face: "down" },
+    auditorSeat: { x: 90, y: 128, face: "up" },
+    auditorIdle: { x: 152, y: 166, face: "down" },
+    fixerSeat: { x: 390, y: 128, face: "up" },
+    fixerIdle: { x: 328, y: 166, face: "down" },
+    tableLeft: { x: 198, y: 160, face: "down" },
+    tableRight: { x: 282, y: 160, face: "down" },
+    rack: { x: 240, y: 278, face: "up" },
+    printer: { x: 50, y: 276, face: "up" },
   };
 
   // ---------- sprites: 10 x 14 grids, one char per pixel ----------
@@ -72,31 +72,7 @@
     auditor: { H: "#3b2a20", S: "#f1c27d", E: "#15151f", G: "#d6dee8", T: "#7c6cf0", t: "#5847c9", W: "#2f2f46", P: "#2f2f46", B: "#15151f" },
     fixer: { H: "#2d1f17", Y: "#fdcb6e", S: "#d9a066", E: "#15151f", T: "#25b591", t: "#178a6d", W: "#8b5a2b", P: "#3a4a5a", B: "#15151f" },
   };
-  // Seen from behind, sitting at the desk: KAI in a hoodie with a headset,
-  // JAX in a cap. 14 x 16 grids, drawn at the same PX as the walking sprites.
-  const SEATED = {
-    auditor: [
-      "...kHHHHHHk...", "..kHHHHHHHHk..", ".cHHHHHHHHHHc.", ".cHHHHHHHHHHc.",
-      ".cHHHHHHHHHHc.", "..HHHHHHHHHH..", "...SHHHHHHS...", "....SSSSSS....",
-      "..ThhhhhhhhT..", ".TTThhhhhhTTT.", "TTTTTThhTTTTTT", "TTTTTTTTTTTTTT",
-      "TtTTTTTTTTTTtT", "TtTTTTTTTTTTtT", ".TTTTTTTTTTTT.", ".PPPPPPPPPPPP.",
-    ],
-    fixer: [
-      "....CCCCCC....", "...CCCCCCCC...", "..CCCCCCCCCC..", "..CCCbbbbCCC..",
-      "..HHHHHHHHHH..", "..HHHHHHHHHH..", "...SHHHHHHS...", "....SSSSSS....",
-      "..TTTTTTTTTT..", ".TTTTTTTTTTTT.", "TTTTTTTTTTTTTT", "TTTTTTTTTTTTTT",
-      "TtTTTTTTTTTTtT", "TtTTTTTTTTTTtT", ".TTTTTTTTTTTT.", ".PPPPPPPPPPPP.",
-    ],
-  };
-  // JAX throws his arms up when a fix lands.
-  SEATED.fixerCheer = SEATED.fixer.map((row, r) =>
-    r >= 0 && r <= 9 ? "S" + row.slice(1, 13) + "S" : row);
-  const SEATED_COLORS = {
-    auditor: { H: "#3b2a20", k: "#15151f", c: "#b266ff", S: "#f1c27d", T: "#7c5cff", t: "#5a3fd1", h: "#a48bff", P: "#2f2f46" },
-    fixer: { C: "#1fb874", b: "#0e5c3a", H: "#2d1f17", S: "#d9a066", T: "#25b591", t: "#178a6d", P: "#3a4a5a" },
-  };
-
-  const PX = 3; // logical px per sprite pixel
+  const PX = 2; // logical px per sprite pixel
   const SPRITE_W = 10;
   const SPRITE_H = 14;
 
@@ -139,8 +115,8 @@
   }
 
   const agents = {
-    auditor: makeAgent("auditor", SPOTS.auditorSeat),
-    fixer: makeAgent("fixer", SPOTS.fixerSeat),
+    auditor: makeAgent("auditor", SPOTS.auditorIdle),
+    fixer: makeAgent("fixer", SPOTS.fixerIdle),
   };
 
   // ---------- movement ----------
@@ -292,23 +268,16 @@
 
   function monitor(x, y, on, glow, dark, now) {
     rect(x, y, 26, 18, C.metalDark);
-    rect(x + 2, y + 2, 22, 13, dark);
-    const tickN = on && !reduced.matches ? Math.floor(now / 260) : 0;
-    ctx.globalAlpha = on ? 1 : 0.45;
-    for (let i = 0; i < 4; i++) {
-      const w = 4 + ((i * 7 + tickN * 5 + x) % 15);
-      rect(x + 4, y + 4 + i * 3, w, 1, glow);
+    rect(x + 2, y + 2, 22, 13, on ? dark : C.screenOff);
+    if (on) {
+      const tickN = reduced.matches ? 0 : Math.floor(now / 260);
+      for (let i = 0; i < 4; i++) {
+        const w = 4 + ((i * 7 + tickN * 5) % 15);
+        rect(x + 4, y + 4 + i * 3, w, 1, glow);
+      }
     }
-    ctx.globalAlpha = 1;
     rect(x + 11, y + 18, 4, 3, C.metal);
     rect(x + 7, y + 21, 12, 2, C.metal);
-  }
-
-  // Three screens side by side, the middle one a little taller.
-  function monitors3(x, y, on, glow, dark, now) {
-    monitor(x, y + 3, on, glow, dark, now);
-    monitor(x + 26, y, on, glow, dark, now);
-    monitor(x + 52, y + 3, on, glow, dark, now);
   }
 
   function keyboard(x, y) {
@@ -316,21 +285,11 @@
     for (let i = 0; i < 4; i++) rect(x + 2 + i * 4, y + 1, 2, 1, "#6c6c90");
   }
 
-  // A gaming chair, seen from behind, centred on cx with its seat at y.
-  // When someone sits in it only the base shows under them.
-  function gamingChair(cx, y, accent, occupied) {
-    if (!occupied) {
-      rect(cx - 14, y - 34, 28, 30, "#1b1d33");
-      rect(cx - 14, y - 34, 28, 3, accent);
-      rect(cx - 2, y - 30, 4, 24, accent);
-      rect(cx - 17, y - 14, 4, 10, "#1b1d33");
-      rect(cx + 13, y - 14, 4, 10, "#1b1d33");
-    }
-    rect(cx - 16, y - 4, 32, 6, "#23264a");
-    rect(cx - 2, y + 2, 4, 6, C.metalDark);
-    rect(cx - 13, y + 8, 26, 2, C.metalDark);
-    rect(cx - 14, y + 9, 3, 3, "#111");
-    rect(cx + 11, y + 9, 3, 3, "#111");
+  function chair(x, y) {
+    rect(x, y, 20, 10, C.chair);
+    rect(x, y, 20, 2, "#5a5a82");
+    rect(x + 3, y + 10, 2, 4, C.metalDark);
+    rect(x + 15, y + 10, 2, 4, C.metalDark);
   }
 
   function cabinet(x, y) {
@@ -406,17 +365,14 @@
     rect(x + 4, y, 4, 4, "#27ae60");
   }
 
-  function zone(x, y, w, h, color, name, role) {
-    ctx.globalAlpha = 0.9;
+  function zone(x, y, w, h, color, label) {
+    ctx.globalAlpha = 0.85;
     outline(x, y, w, h, color);
     outline(x + 1, y + 1, w - 2, h - 2, color);
-    ctx.globalAlpha = 0.09;
+    ctx.globalAlpha = 0.08;
     rect(x + 2, y + 2, w - 4, h - 4, color);
     ctx.globalAlpha = 1;
-    text(name, x + 8, y + h - 27, color, 13, "left", "bold");
-    ctx.globalAlpha = 0.85;
-    text(role, x + 8, y + h - 12, color, 7);
-    ctx.globalAlpha = 1;
+    text(label, x + 6, y + h - 11, color, 7, "left", "bold");
   }
 
   function drawRoom(now) {
@@ -432,47 +388,31 @@
     windowPane(392, 8, 64, 24);
     whiteboard(176, 5, 128, 30);
 
-    zone(8, 46, 200, 122, C.auditor, "KAI", "The Auditor");
-    zone(272, 46, 200, 122, C.fixer, "JAX", "The Fixer");
+    zone(8, 50, 200, 134, C.auditor, "KAI (Auditor)");
+    zone(272, 50, 200, 134, C.fixer, "JAX (Fixer)");
 
-    cabinet(166, 62);
+    cabinet(166, 58);
     desk(48, 76, 84);
-    monitors3(54, 52, scene.monitors.auditor, C.auditor, C.auditorDark, now);
+    monitor(77, 56, scene.monitors.auditor, C.auditor, C.auditorDark, now);
     keyboard(80, 85);
-    gamingChair(SPOTS.auditorSeat.x, SPOTS.auditorSeat.y, C.auditor, seated(agents.auditor));
+    chair(80, 108);
 
-    toolbox(284, 86);
+    toolbox(284, 78);
     desk(348, 76, 84);
-    monitors3(354, 52, scene.monitors.fixer, C.fixer, C.fixerDark, now);
+    monitor(377, 56, scene.monitors.fixer, C.fixer, C.fixerDark, now);
     keyboard(380, 85);
-    gamingChair(SPOTS.fixerSeat.x, SPOTS.fixerSeat.y, C.fixer, seated(agents.fixer));
-    toolbox(330, 118);
+    chair(380, 108);
 
-    table(210, 104, 60);
-    papers(scene.table, 233, 110);
+    table(210, 120, 60);
+    papers(scene.table, 233, 126);
 
-    printer(30, 204, now);
-    rack(224, 186, now);
-    plant(178, 222);
-    plant(338, 206);
-    plant(448, 214);
-  }
-
-  function seated(a) {
-    const seat = a.who === "auditor" ? SPOTS.auditorSeat : SPOTS.fixerSeat;
-    return a.path.length === 0 && Math.round(a.x) === seat.x && Math.round(a.y) === seat.y;
+    rack(224, 204, now);
+    printer(30, 226, now);
+    plant(452, 252);
+    plant(184, 252);
   }
 
   function drawAgent(a, now) {
-    if (seated(a)) {
-      const cheer = a.who === "fixer" && now < (a.cheerUntil || 0);
-      const rows = cheer ? SEATED.fixerCheer : SEATED[a.who];
-      const bob = a.working && !reduced.matches && Math.floor(now / 340) % 2 ? 1 : 0;
-      const left = Math.round(a.x) - 21;
-      a.drawTop = Math.round(a.y) - 48 + bob;
-      grid(rows, SEATED_COLORS[a.who], left, a.drawTop, 3);
-      return;
-    }
     const moving = a.path.length > 0;
     const legs = moving ? (Math.floor(now / 170) % 2 ? LEGS.stepA : LEGS.stepB) : LEGS.stand;
     const bob = a.working && !moving && !reduced.matches && Math.floor(now / 340) % 2 ? 1 : 0;
@@ -481,17 +421,16 @@
     const colors = COLORS[a.who];
 
     ctx.globalAlpha = 0.35;
-    rect(left + 4, Math.round(a.y) - 2, 22, 4, "#000");
+    rect(left + 3, Math.round(a.y) - 2, 14, 3, "#000");
     ctx.globalAlpha = 1;
 
     grid(legs, colors, left, top + 11 * PX, PX);
     grid(TORSO, colors, left, top + 6 * PX + bob, PX);
     grid(HEADS[a.who][a.face], colors, left, top + bob, PX);
-    a.drawTop = top + bob;
 
     if (a.carrying > 0 && a.face === "down") {
-      rect(left + 8, top + 22, 14, 10, C.paper);
-      outline(left + 8, top + 22, 14, 10, C.paperEdge);
+      rect(left + 5, top + 15, 10, 7, C.paper);
+      outline(left + 5, top + 15, 10, 7, C.paperEdge);
     }
   }
 
@@ -506,7 +445,7 @@
     const h = 12;
     const ax = Math.round(a.x);
     const bx = Math.max(2, Math.min(W - w - 2, ax - Math.round(w / 2)));
-    const by = (a.drawTop ?? Math.round(a.y) - SPRITE_H * PX) - h - 6;
+    const by = Math.round(a.y) - SPRITE_H * PX - h - 6;
     ctx.globalAlpha = age > BUBBLE_MS - 2000 ? Math.max(0, (BUBBLE_MS - age) / 2000) : 1;
     rect(bx, by, w, h, "#f5f5fa");
     outline(bx, by, w, h, a.who === "auditor" ? C.auditor : C.fixer);
@@ -543,16 +482,12 @@
   // largest whole multiple.
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const frame = view.closest(".office-frame") || view.parentElement;
-    const box = frame.getBoundingClientRect();
+    const box = view.parentElement.getBoundingClientRect();
     const s = Math.max(0.25, Math.min((box.width * dpr) / W, (box.height * dpr) / H));
     view.width = Math.round(W * s);
     view.height = Math.round(H * s);
-    // The scene wrapper takes the same size, so the DOM props laid over the
-    // canvas (positioned in percentages) stay glued to the drawing.
-    const scene = view.parentElement;
-    scene.style.width = `${view.width / dpr}px`;
-    scene.style.height = `${view.height / dpr}px`;
+    view.style.width = `${view.width / dpr}px`;
+    view.style.height = `${view.height / dpr}px`;
     renderScale = Math.max(1, Math.ceil(s - 0.01));
     buffer.width = W * renderScale;
     buffer.height = H * renderScale;
@@ -584,7 +519,7 @@
       say(A, `${n} for you`, "📋");
     });
     pause(A, 500);
-    go(A, "auditorSeat");
+    go(A, "auditorIdle");
 
     go(F, "tableRight");
     F.queue.push({ until: () => scene.table > 0 });
@@ -607,7 +542,7 @@
       say(F, changed ? "pass saved" : "nothing changed", changed ? "📦" : "🤷");
     });
     pause(F, 900);
-    go(F, "fixerSeat");
+    go(F, "fixerIdle");
   }
 
   function printReport() {
@@ -615,7 +550,7 @@
     then(A, () => { scene.printStartedAt = performance.now(); say(A, "printing report", "🖨️"); });
     pause(A, 1700);
     then(A, () => { A.carrying = 1; scene.printStartedAt = -1; say(A, "report ready", "📄"); });
-    go(A, "auditorSeat");
+    go(A, "auditorIdle");
     then(A, () => { A.carrying = 0; });
   }
 
@@ -701,7 +636,6 @@
         break;
       case "fix_applied":
         scene.board.fixed += 1;
-        F.cheerUntil = performance.now() + 2500;
         say(F, `${p.finding_id} fixed`, "✅");
         break;
       case "fix_dismissed":
@@ -759,7 +693,7 @@
     F.working = false;
     go(A, "auditorSeat");
     say(A, mode === "audit" ? "auditing" : "starting", "🔍");
-    go(F, "fixerSeat");
+    go(F, "fixerIdle");
     say(F, mode === "audit" ? "audit only today" : "waiting for work", "☕");
   }
 
@@ -781,7 +715,7 @@
     buffer = document.createElement("canvas");
     ctx = buffer.getContext("2d");
     resize();
-    new ResizeObserver(resize).observe(view.closest(".office-frame") || view.parentElement);
+    new ResizeObserver(resize).observe(view.parentElement);
     requestAnimationFrame((t) => { last = t; frame(t); });
   }
 

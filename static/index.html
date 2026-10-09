@@ -13,7 +13,7 @@
     <aside class="col col-left">
       <header class="panel brand">
         <h1>ZweiGeeks</h1>
-        <p>KAI audits a git repository and JAX fixes what it can. The fixes land in your working tree, uncommitted.</p>
+        <p>Two local agents audit a git repository and fix what they can. The fixes land in your working tree, uncommitted.</p>
         <dl class="runtime" id="runtime" aria-label="Model configuration">
           <div><dt>KAI (Auditor)</dt><dd id="cfg-auditor">…</dd></div>
           <div><dt>JAX (Fixer)</dt><dd id="cfg-fixer">…</dd></div>
@@ -69,65 +69,14 @@
     </aside>
 
     <main class="col office-col">
-      <div class="office-frame" id="office-frame">
-        <div class="scene" id="scene">
-          <canvas id="office" role="img"
-                  aria-label="Pixel-art office where KAI, the Auditor, and JAX, the Fixer, act out the run, with a break room below. The activity log has the same information as text."></canvas>
-
-          <!-- Status bubbles above each workstation -->
-          <span class="zone-chip zone-kai" id="chip-auditor">Idle</span>
-          <span class="zone-chip zone-jax" id="chip-fixer">Idle</span>
-
-          <!-- Chill area. Each prop is a CSS shape; a PNG in static/sprites/ replaces it. -->
-          <div class="prop prop-fridge" aria-hidden="true">
-            <div class="shape fridge">
-              <div class="fridge-door"><div class="shelf"><i class="can k1"></i><i class="can k2"></i><i class="can k3"></i></div><div class="shelf"><i class="can k1"></i><i class="can k2"></i><i class="can k3"></i></div><div class="shelf"><i class="can k1"></i><i class="can k2"></i><i class="can k3"></i></div><div class="shelf"><i class="can k1"></i><i class="can k2"></i><i class="can k3"></i></div><div class="shelf"><i class="can k1"></i><i class="can k2"></i><i class="can k3"></i></div></div>
-              <span class="fridge-handle"></span>
-            </div>
-            <img class="sprite" src="/static/sprites/fridge.png" alt="" data-sprite>
-          </div>
-
-          <div class="prop prop-pool" aria-hidden="true">
-            <div class="shape pool">
-              <i class="pocket p1"></i><i class="pocket p2"></i><i class="pocket p3"></i>
-              <i class="pocket p4"></i><i class="pocket p5"></i><i class="pocket p6"></i>
-              <i class="ball b-white"></i>
-              <i class="ball r1"></i><i class="ball r2"></i><i class="ball r3"></i><i class="ball r4"></i><i class="ball r5"></i>
-              <i class="cue c-a"></i><i class="cue c-b"></i>
-            </div>
-            <img class="sprite" src="/static/sprites/pool-table.png" alt="" data-sprite>
-          </div>
-
-          <div class="prop prop-pizza" aria-hidden="true">
-            <div class="shape pizza"><i class="slice"></i><i class="slice s2"></i><i class="slice s3"></i></div>
-            <img class="sprite" src="/static/sprites/pizza.png" alt="" data-sprite>
-          </div>
-
-          <div class="prop prop-ps" aria-hidden="true">
-            <div class="shape ps">
-              <div class="tv"><div class="tv-screen">
-                <span class="fifa-score">FIFA 2 : 1</span>
-                <span class="pitch-line"></span><span class="pitch-circle"></span>
-                <i class="box bl"></i><i class="box br"></i>
-                <i class="player pa1"></i><i class="player pa2"></i><i class="player pb1"></i><i class="player pb2"></i>
-                <i class="football"></i>
-              </div></div>
-              <div class="stand"><i class="console"></i><i class="pad-a"></i></div>
-              <div class="rug"></div>
-              <div class="chair-gaming"><i class="seat"></i></div>
-              <div class="couch"><i class="arm l"></i><i class="back"></i><i class="arm r"></i></div>
-              <i class="pad p1"></i><i class="pad p2"></i>
-            </div>
-            <img class="sprite" src="/static/sprites/playstation.png" alt="" data-sprite>
-          </div>
-          <span class="chill-label" aria-hidden="true">Chill area</span>
-        </div>
+      <div class="office-frame">
+        <canvas id="office" role="img"
+                aria-label="Pixel-art office where KAI, the Auditor, and JAX, the Fixer, act out the run. The activity log has the same information as text."></canvas>
       </div>
     </main>
 
     <aside class="col col-right">
-      <section class="panel agents" aria-label="Profiles">
-        <h2 class="panel-title">Profiles</h2>
+      <section class="panel agents" aria-label="Agents">
         <article class="agent agent-auditor" id="card-auditor">
           <canvas class="portrait" data-who="auditor" aria-hidden="true"></canvas>
           <div class="agent-text">

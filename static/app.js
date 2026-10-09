@@ -117,14 +117,9 @@
 
   // ---------- agent cards ----------
 
-  const CHIP_ACTIVE = { auditor: "Scanning…", fixer: "Fixing…" };
-
   function setAgent(who, text, active) {
     $(`status-${who}`).textContent = text;
     $(`card-${who}`).classList.toggle("is-active", Boolean(active));
-    const chip = $(`chip-${who}`);
-    chip.textContent = active ? CHIP_ACTIVE[who] : (/^Done|Idle/.test(text) ? "Idle" : "Waiting…");
-    chip.classList.toggle("is-active", Boolean(active));
   }
 
   function setStat(who, text) {
@@ -361,6 +356,10 @@
       const handle = row ? row.handle : logRow("fixer", "neutral", "");
       handle.set("neutral", `${finding_id}: nothing to fix`, [row && row.file, { prose: `Likely a false positive: ${reason}` }]);
       if (row) row.open = false;
+    },
+
+    fix_skipped({ finding_id }) {
+      logRow("fixer", "neutral", `${finding_id}: already changed by an earlier fix`);
     },
 
     fix_rejected({ finding_id, reason }) {
@@ -619,7 +618,7 @@
       audit
         ? document.createTextNode("Read-only: you get findings and a PDF report. Nothing in the repository is changed.")
         : document.createTextNode(
-          "Fixes are edited straight into your files and left uncommitted, so Source Control shows them. Files you've already changed are left alone. Nothing is committed, staged or pushed.",
+          "Fixes are edited straight into your files and left uncommitted, so Source Control shows them. Nothing is committed, staged or pushed.",
         ),
     );
   }
@@ -954,13 +953,6 @@
   if (office) {
     office.mount($("office"));
     for (const c of document.querySelectorAll("canvas.portrait")) office.portrait(c, c.dataset.who);
-  }
-  // Drop PNGs into static/sprites/ and they replace the CSS placeholder props.
-  for (const img of document.querySelectorAll("img[data-sprite]")) {
-    const show = () => img.closest(".prop").classList.add("has-sprite");
-    if (img.complete && img.naturalWidth) show();
-    img.addEventListener("load", show);
-    img.addEventListener("error", () => img.remove());
   }
   const savedPath = storage.get(LAST_PATH);
   if (savedPath) ui.repoPath.value = savedPath;
