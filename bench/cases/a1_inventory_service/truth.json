@@ -1,0 +1,28 @@
+{
+  "tier": "A",
+  "description": "Copy of tests/fixtures/vuln_py: the planted issues static tools are known to flag.",
+  "bugs": [
+    {"id": "a1-sql-injection", "file": "app.py", "line_text": "cursor = conn.execute(f\"SELECT id, name, price FROM items WHERE name = '{name}'\")", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "app.py", "pattern": "f\"SELECT"}},
+    {"id": "a1-shell-true", "file": "app.py", "line_text": "return subprocess.call(\"tar czf logs.tgz \" + directory, shell=True)", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "app.py", "pattern": "shell=True"}},
+    {"id": "a1-yaml-load", "file": "app.py", "line_text": "return yaml.load(f)", "category": "security", "tier": "A",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_load_settings.py::test_load_settings_parses_plain_yaml_safely"}},
+    {"id": "a1-verify-false", "file": "app.py", "line_text": "response = requests.get(url, verify=False, timeout=10)", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "app.py", "pattern": "verify=False"}},
+    {"id": "a1-hardcoded-password", "file": "app.py", "line_text": "DB_PASSWORD = \"hunter2-prod-password\"", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "app.py", "pattern": "hunter2-prod-password"}},
+    {"id": "a1-pin-pyyaml", "file": "requirements.txt", "line_text": "PyYAML==5.3", "category": "dependency", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "requirements.txt", "pattern": "^PyYAML==5\\.3$"}},
+    {"id": "a1-pin-requests", "file": "requirements.txt", "line_text": "requests==2.19.1", "category": "dependency", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "requirements.txt", "pattern": "^requests==2\\.19\\.1$"}},
+    {"id": "a1-unused-os", "file": "helpers.py", "line_text": "import os", "category": "quality", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "helpers.py", "pattern": "^import os$"}},
+    {"id": "a1-unused-sys", "file": "helpers.py", "line_text": "import sys", "category": "quality", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "helpers.py", "pattern": "^import sys$"}},
+    {"id": "a1-eq-none", "file": "helpers.py", "line_text": "if item == None:", "category": "quality", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "helpers.py", "pattern": "== None"}},
+    {"id": "a1-fstring-no-placeholder", "file": "helpers.py", "line_text": "label = f\"item\"", "category": "quality", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "helpers.py", "pattern": "f\"item\""}}
+  ]
+}

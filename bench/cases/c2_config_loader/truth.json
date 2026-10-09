@@ -1,0 +1,5 @@
+{
+  "tier": "C",
+  "description": "Clean control that looks risky (YAML, SQL, subprocess) but uses the safe variant of each. Every finding counts as a false alarm.",
+  "bugs": []
+}

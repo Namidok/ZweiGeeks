@@ -1,0 +1,14 @@
+{
+  "tier": "A",
+  "description": "Web helpers with issues bandit can see (pickle, md5, eval) and one it can't (path traversal).",
+  "bugs": [
+    {"id": "a2-pickle-loads", "file": "webutils/sessions.py", "line_text": "return pickle.loads(base64.b64decode(cookie))", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "webutils/sessions.py", "pattern": "pickle\\.loads"}},
+    {"id": "a2-md5-password", "file": "webutils/passwords.py", "line_text": "return hashlib.md5(password.encode(\"utf-8\")).hexdigest()", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "webutils/passwords.py", "pattern": "hashlib\\.md5"}},
+    {"id": "a2-path-traversal", "file": "webutils/downloads.py", "line_text": "return root / filename", "category": "security", "tier": "A",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_downloads.py::test_read_download_refuses_paths_outside_the_root"}},
+    {"id": "a2-eval-limit", "file": "webutils/query.py", "line_text": "limit = eval(raw)", "category": "security", "tier": "A",
+     "fix_check": {"type": "absent_regex", "file": "webutils/query.py", "pattern": "\\beval\\("}}
+  ]
+}

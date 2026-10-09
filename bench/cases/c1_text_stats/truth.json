@@ -1,0 +1,5 @@
+{
+  "tier": "C",
+  "description": "Clean control: idiomatic, typed, tested, no planted bugs. Every finding counts as a false alarm.",
+  "bugs": []
+}

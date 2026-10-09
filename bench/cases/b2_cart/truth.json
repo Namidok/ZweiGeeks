@@ -1,0 +1,12 @@
+{
+  "tier": "B",
+  "description": "Logic bugs no static tool flags: a shared mutable default, a missing None check, an off-by-one condition.",
+  "bugs": [
+    {"id": "b2-mutable-default", "file": "cart.py", "line_text": "def __init__(self, lines: list[Line] = []):", "category": "logic", "tier": "B",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_cart_bugs.py::test_new_carts_do_not_share_lines"}},
+    {"id": "b2-discount-none-check", "file": "cart.py", "line_text": "rate = DISCOUNT_CODES.get(code.upper())", "category": "logic", "tier": "B",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_cart_bugs.py::test_unknown_discount_code_gives_no_discount"}},
+    {"id": "b2-remove-keeps-empty-line", "file": "cart.py", "line_text": "if line.qty < 0:", "category": "logic", "tier": "B",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_cart_bugs.py::test_removing_every_unit_drops_the_line"}}
+  ]
+}

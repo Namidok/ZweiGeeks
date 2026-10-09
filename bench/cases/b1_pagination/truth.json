@@ -1,0 +1,12 @@
+{
+  "tier": "B",
+  "description": "Logic bugs no static tool flags: a floor instead of a ceiling, an off-by-one start index, an inverted comparison.",
+  "bugs": [
+    {"id": "b1-total-pages-floor", "file": "pagination.py", "line_text": "return total_items // per_page", "category": "logic", "tier": "B",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_pagination_bugs.py::test_total_pages_counts_the_last_partial_page"}},
+    {"id": "b1-paginate-off-by-one", "file": "pagination.py", "line_text": "start = page * per_page", "category": "logic", "tier": "B",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_pagination_bugs.py::test_first_page_starts_at_the_first_item"}},
+    {"id": "b1-is-expired-inverted", "file": "pagination.py", "line_text": "return now < token.expires_at", "category": "logic", "tier": "B",
+     "fix_check": {"type": "test_passes", "path": "bug_tests/test_pagination_bugs.py::test_token_expires_after_its_ttl"}}
+  ]
+}
