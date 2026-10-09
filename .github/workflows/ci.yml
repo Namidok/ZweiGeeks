@@ -22,7 +22,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests bench
 
       # No Ollama on the runner: every LLM call in the suite is mocked.
       - name: Test
