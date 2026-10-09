@@ -375,7 +375,7 @@ never added together:
 |---|---|
 | Recall | planted bugs a source's findings matched / planted bugs. A finding matches a bug in the same file whose flagged line is the buggy line, or within 3 lines of it. |
 | False alarms per file | findings on the clean control cases / their files (every finding there is a false alarm) |
-| Fix rate | bugs whose fix check passes after the run / planted bugs, credited to the source of the finding the applied edit fixed ("other": fixed with no edit aimed at it) |
+| Fix rate | bugs whose fix check passes after the run / planted bugs, credited to the source of the finding the applied edit fixed ("other": fixed by one of JAX's own improvements or as a side effect of another edit) |
 | Regression rate | behaviour tests that passed before the run and fail after it / behaviour tests |
 | Cost per fixed bug | fix attempts per fixed bug (by source); model calls and seconds of the fix run per fixed bug |
 
