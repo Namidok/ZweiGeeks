@@ -72,6 +72,30 @@
     auditor: { H: "#3b2a20", S: "#f1c27d", E: "#15151f", G: "#d6dee8", T: "#7c6cf0", t: "#5847c9", W: "#2f2f46", P: "#2f2f46", B: "#15151f" },
     fixer: { H: "#2d1f17", Y: "#fdcb6e", S: "#d9a066", E: "#15151f", T: "#25b591", t: "#178a6d", W: "#8b5a2b", P: "#3a4a5a", B: "#15151f" },
   };
+  // Seen from behind, sitting at the desk: KAI in a hoodie with a headset,
+  // JAX in a cap. 14 x 16 grids, drawn at the same PX as the walking sprites.
+  const SEATED = {
+    auditor: [
+      "...kHHHHHHk...", "..kHHHHHHHHk..", ".cHHHHHHHHHHc.", ".cHHHHHHHHHHc.",
+      ".cHHHHHHHHHHc.", "..HHHHHHHHHH..", "...SHHHHHHS...", "....SSSSSS....",
+      "..ThhhhhhhhT..", ".TTThhhhhhTTT.", "TTTTTThhTTTTTT", "TTTTTTTTTTTTTT",
+      "TtTTTTTTTTTTtT", "TtTTTTTTTTTTtT", ".TTTTTTTTTTTT.", ".PPPPPPPPPPPP.",
+    ],
+    fixer: [
+      "....CCCCCC....", "...CCCCCCCC...", "..CCCCCCCCCC..", "..CCCbbbbCCC..",
+      "..HHHHHHHHHH..", "..HHHHHHHHHH..", "...SHHHHHHS...", "....SSSSSS....",
+      "..TTTTTTTTTT..", ".TTTTTTTTTTTT.", "TTTTTTTTTTTTTT", "TTTTTTTTTTTTTT",
+      "TtTTTTTTTTTTtT", "TtTTTTTTTTTTtT", ".TTTTTTTTTTTT.", ".PPPPPPPPPPPP.",
+    ],
+  };
+  // JAX throws his arms up when a fix lands.
+  SEATED.fixerCheer = SEATED.fixer.map((row, r) =>
+    r >= 0 && r <= 9 ? "S" + row.slice(1, 13) + "S" : row);
+  const SEATED_COLORS = {
+    auditor: { H: "#3b2a20", k: "#15151f", c: "#b266ff", S: "#f1c27d", T: "#7c5cff", t: "#5a3fd1", h: "#a48bff", P: "#2f2f46" },
+    fixer: { C: "#1fb874", b: "#0e5c3a", H: "#2d1f17", S: "#d9a066", T: "#25b591", t: "#178a6d", P: "#3a4a5a" },
+  };
+
   const PX = 3; // logical px per sprite pixel
   const SPRITE_W = 10;
   const SPRITE_H = 14;
@@ -115,8 +139,8 @@
   }
 
   const agents = {
-    auditor: makeAgent("auditor", SPOTS.auditorIdle),
-    fixer: makeAgent("fixer", SPOTS.fixerIdle),
+    auditor: makeAgent("auditor", SPOTS.auditorSeat),
+    fixer: makeAgent("fixer", SPOTS.fixerSeat),
   };
 
   // ---------- movement ----------
@@ -268,14 +292,14 @@
 
   function monitor(x, y, on, glow, dark, now) {
     rect(x, y, 26, 18, C.metalDark);
-    rect(x + 2, y + 2, 22, 13, on ? dark : C.screenOff);
-    if (on) {
-      const tickN = reduced.matches ? 0 : Math.floor(now / 260);
-      for (let i = 0; i < 4; i++) {
-        const w = 4 + ((i * 7 + tickN * 5) % 15);
-        rect(x + 4, y + 4 + i * 3, w, 1, glow);
-      }
+    rect(x + 2, y + 2, 22, 13, dark);
+    const tickN = on && !reduced.matches ? Math.floor(now / 260) : 0;
+    ctx.globalAlpha = on ? 1 : 0.45;
+    for (let i = 0; i < 4; i++) {
+      const w = 4 + ((i * 7 + tickN * 5 + x) % 15);
+      rect(x + 4, y + 4 + i * 3, w, 1, glow);
     }
+    ctx.globalAlpha = 1;
     rect(x + 11, y + 18, 4, 3, C.metal);
     rect(x + 7, y + 21, 12, 2, C.metal);
   }
@@ -292,11 +316,21 @@
     for (let i = 0; i < 4; i++) rect(x + 2 + i * 4, y + 1, 2, 1, "#6c6c90");
   }
 
-  function chair(x, y) {
-    rect(x, y, 20, 10, C.chair);
-    rect(x, y, 20, 2, "#5a5a82");
-    rect(x + 3, y + 10, 2, 4, C.metalDark);
-    rect(x + 15, y + 10, 2, 4, C.metalDark);
+  // A gaming chair, seen from behind, centred on cx with its seat at y.
+  // When someone sits in it only the base shows under them.
+  function gamingChair(cx, y, accent, occupied) {
+    if (!occupied) {
+      rect(cx - 14, y - 34, 28, 30, "#1b1d33");
+      rect(cx - 14, y - 34, 28, 3, accent);
+      rect(cx - 2, y - 30, 4, 24, accent);
+      rect(cx - 17, y - 14, 4, 10, "#1b1d33");
+      rect(cx + 13, y - 14, 4, 10, "#1b1d33");
+    }
+    rect(cx - 16, y - 4, 32, 6, "#23264a");
+    rect(cx - 2, y + 2, 4, 6, C.metalDark);
+    rect(cx - 13, y + 8, 26, 2, C.metalDark);
+    rect(cx - 14, y + 9, 3, 3, "#111");
+    rect(cx + 11, y + 9, 3, 3, "#111");
   }
 
   function cabinet(x, y) {
@@ -405,13 +439,14 @@
     desk(48, 76, 84);
     monitors3(54, 52, scene.monitors.auditor, C.auditor, C.auditorDark, now);
     keyboard(80, 85);
-    chair(80, 108);
+    gamingChair(SPOTS.auditorSeat.x, SPOTS.auditorSeat.y, C.auditor, seated(agents.auditor));
 
     toolbox(284, 86);
     desk(348, 76, 84);
     monitors3(354, 52, scene.monitors.fixer, C.fixer, C.fixerDark, now);
     keyboard(380, 85);
-    chair(380, 108);
+    gamingChair(SPOTS.fixerSeat.x, SPOTS.fixerSeat.y, C.fixer, seated(agents.fixer));
+    toolbox(330, 118);
 
     table(210, 104, 60);
     papers(scene.table, 233, 110);
@@ -423,7 +458,21 @@
     plant(448, 214);
   }
 
+  function seated(a) {
+    const seat = a.who === "auditor" ? SPOTS.auditorSeat : SPOTS.fixerSeat;
+    return a.path.length === 0 && Math.round(a.x) === seat.x && Math.round(a.y) === seat.y;
+  }
+
   function drawAgent(a, now) {
+    if (seated(a)) {
+      const cheer = a.who === "fixer" && now < (a.cheerUntil || 0);
+      const rows = cheer ? SEATED.fixerCheer : SEATED[a.who];
+      const bob = a.working && !reduced.matches && Math.floor(now / 340) % 2 ? 1 : 0;
+      const left = Math.round(a.x) - 21;
+      a.drawTop = Math.round(a.y) - 48 + bob;
+      grid(rows, SEATED_COLORS[a.who], left, a.drawTop, 3);
+      return;
+    }
     const moving = a.path.length > 0;
     const legs = moving ? (Math.floor(now / 170) % 2 ? LEGS.stepA : LEGS.stepB) : LEGS.stand;
     const bob = a.working && !moving && !reduced.matches && Math.floor(now / 340) % 2 ? 1 : 0;
@@ -438,6 +487,7 @@
     grid(legs, colors, left, top + 11 * PX, PX);
     grid(TORSO, colors, left, top + 6 * PX + bob, PX);
     grid(HEADS[a.who][a.face], colors, left, top + bob, PX);
+    a.drawTop = top + bob;
 
     if (a.carrying > 0 && a.face === "down") {
       rect(left + 8, top + 22, 14, 10, C.paper);
@@ -456,7 +506,7 @@
     const h = 12;
     const ax = Math.round(a.x);
     const bx = Math.max(2, Math.min(W - w - 2, ax - Math.round(w / 2)));
-    const by = Math.round(a.y) - SPRITE_H * PX - h - 6;
+    const by = (a.drawTop ?? Math.round(a.y) - SPRITE_H * PX) - h - 6;
     ctx.globalAlpha = age > BUBBLE_MS - 2000 ? Math.max(0, (BUBBLE_MS - age) / 2000) : 1;
     rect(bx, by, w, h, "#f5f5fa");
     outline(bx, by, w, h, a.who === "auditor" ? C.auditor : C.fixer);
@@ -534,7 +584,7 @@
       say(A, `${n} for you`, "📋");
     });
     pause(A, 500);
-    go(A, "auditorIdle");
+    go(A, "auditorSeat");
 
     go(F, "tableRight");
     F.queue.push({ until: () => scene.table > 0 });
@@ -557,7 +607,7 @@
       say(F, changed ? "pass saved" : "nothing changed", changed ? "📦" : "🤷");
     });
     pause(F, 900);
-    go(F, "fixerIdle");
+    go(F, "fixerSeat");
   }
 
   function printReport() {
@@ -565,7 +615,7 @@
     then(A, () => { scene.printStartedAt = performance.now(); say(A, "printing report", "🖨️"); });
     pause(A, 1700);
     then(A, () => { A.carrying = 1; scene.printStartedAt = -1; say(A, "report ready", "📄"); });
-    go(A, "auditorIdle");
+    go(A, "auditorSeat");
     then(A, () => { A.carrying = 0; });
   }
 
@@ -651,6 +701,7 @@
         break;
       case "fix_applied":
         scene.board.fixed += 1;
+        F.cheerUntil = performance.now() + 2500;
         say(F, `${p.finding_id} fixed`, "✅");
         break;
       case "fix_dismissed":
@@ -708,7 +759,7 @@
     F.working = false;
     go(A, "auditorSeat");
     say(A, mode === "audit" ? "auditing" : "starting", "🔍");
-    go(F, "fixerIdle");
+    go(F, "fixerSeat");
     say(F, mode === "audit" ? "audit only today" : "waiting for work", "☕");
   }
 
